@@ -1,0 +1,53 @@
+plugins {
+    id 'com.android.application'
+}
+
+// Optional release key: keystore.properties (never committed) with storeFile, storePassword,
+// keyAlias and keyPassword. Without it, release builds are signed with this machine's debug key,
+// so they still install over each other from the same PC.
+def keystoreProps = new Properties()
+def keystorePropsFile = rootProject.file("keystore.properties")
+if (keystorePropsFile.exists()) {
+    keystorePropsFile.withInputStream { keystoreProps.load(it) }
+}
+
+android {
+    namespace 'com.vag11.tv'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.vag11.tv"
+        minSdk 26
+        targetSdk 34
+        versionCode 1
+        versionName "0.1.0"
+    }
+
+    signingConfigs {
+        release {
+            if (keystorePropsFile.exists()) {
+                storeFile rootProject.file(keystoreProps['storeFile'])
+                storePassword keystoreProps['storePassword']
+                keyAlias keystoreProps['keyAlias']
+                keyPassword keystoreProps['keyPassword']
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig keystorePropsFile.exists() ? signingConfigs.release : signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    // Only for addDocumentStartJavaScript, so the hooks are in place before YouTube's own scripts run.
+    implementation "androidx.webkit:webkit:1.11.0"
+}
