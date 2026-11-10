@@ -24,6 +24,8 @@ try {
 
 $Apk = Join-Path $PSScriptRoot "app\build\outputs\apk\$Variant\app-$Variant.apk"
 & $Adb connect $TvHost | Out-Null
-& $Adb -s $TvHost install -r $Apk
+# -f: internal storage, even when the TV puts new apps on a USB drive. On a USB drive the app's data
+# and the WebView's cache sit on slow flash, which shows as stutter.
+& $Adb -s $TvHost install -r -f $Apk
 if ($LASTEXITCODE -ne 0) { throw "adb install failed with exit code $LASTEXITCODE" }
 Write-Host "VAG11TV ($Variant) installed on $TvHost"

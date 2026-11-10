@@ -15,7 +15,9 @@
     window.__vag11player = true;
 
     // Tallest picture the surface can show, with a little slack for odd sizes such as 1920x1088.
-    var maxHeight = Math.max(480, Math.round(window.screen.height * (window.devicePixelRatio || 1))) * 1.06;
+    // native_video.js raises the ratio the page sees; the surface's real one is asked for here.
+    var ratio = window.__vag11nv && window.__vag11nv.realRatio ? window.__vag11nv.realRatio() : window.devicePixelRatio;
+    var maxHeight = Math.max(480, Math.round(window.screen.height * (ratio || 1))) * 1.06;
 
     // AV1 stays out unless the WebView says it has a hardware decoder for it.
     var av1Hardware = false;
@@ -26,13 +28,13 @@
         }).then(function (r) { av1Hardware = !!(r && r.supported && r.powerEfficient); }, function () { });
     } catch (e) { }
 
-    // With the native picture on (native_video.js) the limits are that decoder's: VP9, up to 1080p.
+    // With the native picture on (native_video.js) the limits are that decoder's: H.264, within
+    // 1920x1088. An ultra-wide video's 1080p is wider than that, so it gets its next size down.
     function keepNative(f) {
         if (!f || !f.height) return true; // audio
-        var m = f.mimeType || '';
-        // Not the HDR kind (profile 2): that needs a 10-bit decoder and an HDR screen.
-        return /^video\/webm/.test(m) && /vp0?9/.test(m) && !/vp9\.2|vp09\.0[23]/.test(m)
-            && f.height <= window.__vag11nv.maxHeight * 1.06;
+        var m = f.mimeType || '', nv = window.__vag11nv;
+        return /^video\/mp4/.test(m) && /avc[13]/.test(m)
+            && f.height <= nv.maxHeight && (f.width || 0) <= nv.maxWidth;
     }
 
     function keep(f) {

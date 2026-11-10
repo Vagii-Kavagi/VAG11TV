@@ -60,17 +60,22 @@ Xiaomi MiTV-MSSP2, Android TV 9, Android System WebView 138.
 ## Experimental: native picture (branch `native-video`)
 
 On this branch the picture is not drawn by the WebView. YouTube's player still chooses the quality,
-downloads the video and draws its controls, but the VP9 video it would hand to the page's own decoder
-is taken over by `native_video.js`, split into frames and decoded by `NativeVideo.java` onto a
-surface under the page, in step with the page's clock. Sound stays in the page. The point is to get
+downloads the video and draws its controls, but the H.264 video it would hand to the page's own
+decoder is taken over by `native_video.js`, split into frames and decoded by `NativeVideo.java` onto
+a surface under the page, in step with the page's clock. Sound stays in the page. The point is to get
 past the 720p surface: 1080p plays on the TV's video plane.
 
-- Measured on the tested TV: 1080p at 25 frames a second with no dropped frames over 20 seconds;
-  seeking inside and outside the buffered part, pause, resume and Back all work.
+- The page is told its pixels are dense enough for 1080p (YouTube offers nothing taller than the
+  area it draws into), and the player is asked for 1080p for as long as a video plays.
+- Frames are handed on as soon as their bytes arrive, not a whole fragment at a time.
+- Measured on the tested TV: 1080p H.264 at 25 frames a second with no dropped frames once started;
+  a few are dropped in the first second.
+- YouTube makes H.264 only up to 480p or 720p for many videos (their 1080p is VP9 or AV1 only), so
+  those play below 1080p here. Streams wider than 1920 or taller than 1088 are left out: the TV's
+  decoder refuses them.
+- For some 60 frames a second videos the player leaves out the H.264 1080p it is sent and plays 720p
+  at 30. Why is not known yet.
 - The tested TV has a 1366x768 panel, so 1080p cannot look sharper there. This is for a 1080p TV.
-- Only VP9 in WebM goes this way; anything else is played by the page as on `main`. The HDR kind of
-  VP9 is left out.
-- YouTube's player picks 720p at 30 frames a second for videos whose 1080p version is 60 frames a
-  second. That is its own choice and has not been looked into.
-- A screenshot taken over ADB shows the video as black: the video plane is not part of it.
+- `install-to-tv.ps1` installs to internal storage (`adb install -f`), also when the TV puts new apps
+  on a USB drive: on slow flash the app's data and the WebView's cache made playback stutter.
 - There is no menu entry to turn it off yet, and adverts or Shorts have not been tried with it.

@@ -5,10 +5,10 @@
 // the work it normally does (choosing quality, downloading, the controls); only the last step
 // changes:
 //   - the video SourceBuffer the player asks for is replaced by a stand-in. What the player appends
-//     to it (WebM with VP9) is split into frames here and handed to the app, which decodes them;
+//     to it (H.264 in MP4) is split into frames here and handed to the app, which decodes them;
 //   - sound stays in the page. Its <video> element therefore plays audio only, and its clock
 //     (currentTime) is what the app shows the frames against.
-// Streams that are not VP9 in WebM are left to the page as before.
+// Streams that are not H.264 are left to the page as before.
 (function () {
     if (window.top !== window || window.__vag11nv) return;
     var bridge = window.VAG11;
@@ -16,33 +16,90 @@
     try { wanted = !!(bridge && window.MediaSource && bridge.nativeVideo()); } catch (e) { }
 
     var nv = window.__vag11nv = {
-        maxHeight: 1080, current: null, rendered: 0, dropped: 0, nextId: 1,
+        // The largest picture the TV's H.264 decoder accepts (media_codecs.xml on a MiTV-MSSP2). A
+        // wider stream, such as a 2400x1080 ultra-wide one, is refused and leaves the screen blank.
+        maxWidth: 1920, maxHeight: 1088,
+        current: null, rendered: 0, dropped: 0, nextId: 1,
         on: function () { return wanted && !!window.VAG11V; },
         // Called by the app about once a second.
         stats: function (rendered, dropped) { nv.rendered = rendered; nv.dropped = dropped; }
     };
     if (!wanted) return;
 
+    // YouTube's player offers no quality taller than the area it draws into, counted in device
+    // pixels: on a 1280x720 WebView that stops at 720p. The picture is no longer drawn there, so
+    // the page is told the pixels are dense enough for 1080p.
+    var realRatio = Object.getOwnPropertyDescriptor(window, 'devicePixelRatio');
+    // For player_tune.js, whose limits are about the page's own surface.
+    nv.realRatio = function () { return realRatio && realRatio.get ? realRatio.get.call(window) : 1; };
+    try {
+        Object.defineProperty(window, 'devicePixelRatio', {
+            configurable: true, enumerable: true,
+            get: function () {
+                var real = nv.realRatio();
+                var h = window.innerHeight || 0;
+                return h > 0 ? Math.max(real, 1080 / h) : real;
+            }
+        });
+    } catch (e) { }
+
+    // And it is held there: the player starts low and steps down on its own, so while a video plays
+    // it is asked again whenever it is below 1080p, or below the best a video without 1080p has.
+    var lastAsk = 0;
+    function hold1080() {
+        var p = document.querySelector('.html5-video-player'), now = Date.now();
+        if (!p || !p.setPlaybackQualityRange || !p.getAvailableQualityLevels || now - lastAsk < 3000) return;
+        try {
+            var levels = p.getAvailableQualityLevels().filter(function (l) { return l !== 'auto'; });
+            if (!levels.length) return;
+            var best = levels.indexOf('hd1080') >= 0 ? 'hd1080' : levels[0];
+            if (p.getPlaybackQuality() === best) return;
+            lastAsk = now;
+            p.setPlaybackQualityRange(best, best);
+        } catch (e) { }
+    }
+
     function post(m) {
         try { window.VAG11V.postMessage(typeof m === 'string' || m instanceof ArrayBuffer ? m : JSON.stringify(m)); } catch (e) { }
     }
 
-    // WebM element ids. Containers are walked into; everything else is read whole or skipped.
-    var EBML = 0x1A45DFA3, TIMECODE_SCALE = 0x2AD7B1, WIDTH = 0xB0, HEIGHT = 0xBA,
-        CLUSTER_TIME = 0xE7, SIMPLE_BLOCK = 0xA3, BLOCK = 0xA1;
-    var CONTAINERS = {};
-    [0x18538067 /* Segment */, 0x1549A966 /* Info */, 0x1654AE6B /* Tracks */, 0xAE /* TrackEntry */,
-        0xE0 /* Video */, 0x1F43B675 /* Cluster */, 0xA0 /* BlockGroup */].forEach(function (id) { CONTAINERS[id] = true; });
-
-    function uint(d, s, e) { var v = 0; for (var i = s; i < e; i++) v = v * 256 + d[i]; return v; }
+    // H.264 in fragmented MP4: an init segment (moov) says how the stream is coded, then each
+    // fragment is a moof (the table of frames) followed by an mdat (the frames).
+    function u32(d, o) { return d[o] * 16777216 + (d[o + 1] << 16) + (d[o + 2] << 8) + d[o + 3]; }
+    function i32(d, o) { var v = u32(d, o); return v >= 2147483648 ? v - 4294967296 : v; }
+    function boxSize(d, p, n) { // [size, header length], or null while the header is incomplete
+        if (p + 8 > n) return null;
+        var size = u32(d, p);
+        if (size === 1) return p + 16 > n ? null : [u32(d, p + 8) * 4294967296 + u32(d, p + 12), 16];
+        return [size === 0 ? n - p : size, 8];
+    }
+    // Calls cb(type, bodyStart, end) for each whole box in d[s, e).
+    function boxes(d, s, e, cb) {
+        while (s < e) {
+            var b = boxSize(d, s, e);
+            if (!b || b[0] < 8 || s + b[0] > e) return;
+            cb(String.fromCharCode(d[s + 4], d[s + 5], d[s + 6], d[s + 7]), s + b[1], s + b[0]);
+            s += b[0];
+        }
+    }
+    // Parameter sets with start codes, the form the decoder takes.
+    function annexB(list) {
+        var n = 0, i, o = 0;
+        for (i = 0; i < list.length; i++) n += 4 + list[i].length;
+        var out = new Uint8Array(n);
+        for (i = 0; i < list.length; i++) { out[o + 3] = 1; out.set(list[i], o + 4); o += 4 + list[i].length; }
+        return out;
+    }
 
     function Fake(type, id) {
         var self = this, target = document.createDocumentFragment();
         this.id = id; this.type = type; this.mode = 'segments'; this.updating = false;
         this.timestampOffset = 0; this.appendWindowStart = 0; this.appendWindowEnd = Infinity;
         this.ranges = []; this.pending = new Uint8Array(0);
-        this.scale = 1000000; this.clusterTime = 0; this.width = 0; this.height = 0;
-        this.frameTime = 1 / 30; this.lastPts = -1; this.closed = false;
+        this.timescale = 0; this.trexDur = 0; this.trexSize = 0; this.lenSize = 4;
+        this.sps = null; this.pps = null; this.configSent = false; this.width = 0; this.height = 0;
+        this.frag = null; // the fragment whose frames are still arriving
+        this.frameTime = 1 / 30; this.lastDts = -1; this.closed = false;
         this.addEventListener = function (t, f, o) { target.addEventListener(t, f, o); };
         this.removeEventListener = function (t, f, o) { target.removeEventListener(t, f, o); };
         this.dispatchEvent = function (ev) { return target.dispatchEvent(ev); };
@@ -78,59 +135,179 @@
         this.ranges = out;
     };
 
-    // Reads as many whole elements as have arrived; the rest waits for the next append.
+    // Reads every whole init segment, and hands on each frame as soon as its bytes have arrived:
+    // once a fragment's table (moof) is in, its frames are known before the rest of it comes. At
+    // 1080p a fragment can be a few seconds of video; waiting for all of it held up the start and
+    // made frames late.
     Fake.prototype.parse = function () {
-        var d = this.pending, n = d.length, p = 0, frames = [], i;
+        var d = this.pending, n = d.length, p = 0, frames = [];
         for (; ;) {
-            if (p + 2 > n) break;
-            var b = d[p], idLen = b & 0x80 ? 1 : b & 0x40 ? 2 : b & 0x20 ? 3 : b & 0x10 ? 4 : 0;
-            if (!idLen) { p = n; break; } // not WebM: drop it
-            if (p + idLen + 1 > n) break;
-            var id = uint(d, p, p + idLen);
-            var sb = d[p + idLen], sizeLen = 1, mark = 0x80;
-            while (sizeLen <= 8 && !(sb & mark)) { sizeLen++; mark >>= 1; }
-            if (sizeLen > 8) { p = n; break; }
-            var body = p + idLen + sizeLen;
-            if (body > n) break;
-            if (CONTAINERS[id]) { p = body; continue; }
-            var size = sb & (mark - 1), unknown = size === mark - 1;
-            for (i = 1; i < sizeLen; i++) { var x = d[p + idLen + i]; size = size * 256 + x; if (x !== 255) unknown = false; }
-            if (unknown) { p = n; break; }
-            var end = body + size;
-            if (end > n) break;
-            if (id === EBML) { this.scale = 1000000; this.clusterTime = 0; }
-            else if (id === TIMECODE_SCALE) this.scale = uint(d, body, end);
-            else if (id === WIDTH) this.width = uint(d, body, end);
-            else if (id === HEIGHT) this.height = uint(d, body, end);
-            else if (id === CLUSTER_TIME) this.clusterTime = uint(d, body, end);
-            else if ((id === SIMPLE_BLOCK || id === BLOCK) && size > 4) {
-                var t = d[body] & 0x80 ? 1 : d[body] & 0x40 ? 2 : 3;
-                var rel = (d[body + t] << 8) | d[body + t + 1];
-                if (rel & 0x8000) rel -= 0x10000;
-                var data = body + t + 3;
-                // A SimpleBlock says whether it is a keyframe; otherwise the VP9 frame header does.
-                var key = id === SIMPLE_BLOCK ? !!(d[body + t + 2] & 0x80) : (d[data] & 0x0C) === 0;
-                frames.push({
-                    pts: (this.clusterTime + rel) * this.scale / 1e9 + this.timestampOffset,
-                    key: key, start: data, end: end
-                });
+            var fr = this.frag;
+            if (fr) {
+                while (fr.next < fr.samples.length && fr.samples[fr.next].end <= n) {
+                    var x = fr.samples[fr.next++];
+                    x.d = d;
+                    frames.push(x);
+                }
+                if (fr.next < fr.samples.length || n < fr.end) break;
+                p = fr.end;
+                this.frag = null;
             }
-            p = end;
+            var b = boxSize(d, p, n);
+            if (!b) break;
+            if (b[0] < 8) { p = n; break; } // not MP4: drop it
+            if (p + b[0] > n) break;
+            var type = String.fromCharCode(d[p + 4], d[p + 5], d[p + 6], d[p + 7]);
+            if (type === 'moov') {
+                this.readInit(d, p + b[1], p + b[0]);
+            } else if (type === 'moof') {
+                var q = p + b[0], m = boxSize(d, q, n);
+                if (!m) break;
+                var samples = [];
+                this.readFragment(d, p, p + b[1], p + b[0], samples);
+                this.frag = { samples: samples, next: 0, end: q + m[0] };
+                p = q; // the fragment's bytes are kept from here until its last frame is out
+                continue;
+            }
+            p += b[0];
         }
-        if (frames.length) this.send(d, frames);
-        this.pending = p >= n ? new Uint8Array(0) : d.slice(p);
+        if (frames.length) this.send(frames);
+        // Drop what is done with, and move the open fragment's offsets along with it.
+        if (p > 0 && this.frag) {
+            this.frag.end -= p;
+            this.frag.samples.forEach(function (s) { s.start -= p; s.end -= p; });
+        }
+        this.pending = p >= n && !this.frag ? new Uint8Array(0) : d.slice(p);
     };
 
-    // One message per append: a 21-byte header, then for each frame its time, keyframe flag, length
-    // and bytes.
-    Fake.prototype.send = function (d, frames) {
-        var total = 21, i, f;
+    Fake.prototype.readInit = function (d, s, e) {
+        var self = this;
+        boxes(d, s, e, function (t, s2, e2) {
+            if (t === 'trak') boxes(d, s2, e2, function (t3, s3, e3) {
+                if (t3 === 'mdia') boxes(d, s3, e3, function (t4, s4, e4) {
+                    if (t4 === 'mdhd') self.timescale = d[s4] === 1 ? u32(d, s4 + 20) : u32(d, s4 + 12);
+                    if (t4 === 'minf') boxes(d, s4, e4, function (t5, s5, e5) {
+                        if (t5 === 'stbl') boxes(d, s5, e5, function (t6, s6, e6) {
+                            if (t6 === 'stsd') self.readEntry(d, s6 + 8, e6);
+                        });
+                    });
+                });
+            });
+            if (t === 'mvex') boxes(d, s2, e2, function (t3, s3) {
+                if (t3 === 'trex') { self.trexDur = u32(d, s3 + 12); self.trexSize = u32(d, s3 + 16); }
+            });
+        });
+    };
+
+    // The avc1 sample entry: the picture size, then avcC with the parameter sets.
+    Fake.prototype.readEntry = function (d, s, e) {
+        var self = this;
+        boxes(d, s, e, function (t, b, end) {
+            if (t !== 'avc1' && t !== 'avc3') return;
+            self.width = (d[b + 24] << 8) | d[b + 25];
+            self.height = (d[b + 26] << 8) | d[b + 27];
+            boxes(d, b + 78, end, function (t2, c) {
+                if (t2 !== 'avcC') return;
+                self.lenSize = (d[c + 4] & 3) + 1;
+                var o = c + 5, sps = [], pps = [], i, len, count = d[o++] & 31;
+                for (i = 0; i < count; i++) { len = (d[o] << 8) | d[o + 1]; sps.push(d.slice(o + 2, o + 2 + len)); o += 2 + len; }
+                count = d[o++];
+                for (i = 0; i < count; i++) { len = (d[o] << 8) | d[o + 1]; pps.push(d.slice(o + 2, o + 2 + len)); o += 2 + len; }
+                self.sps = annexB(sps);
+                self.pps = annexB(pps);
+                self.configSent = false;
+            });
+        });
+    };
+
+    Fake.prototype.readFragment = function (d, moof, body, end, frames) {
+        var self = this;
+        boxes(d, body, end, function (t, s, e) {
+            if (t !== 'traf') return;
+            var dur0 = self.trexDur, size0 = self.trexSize, dts = 0, runs = [];
+            boxes(d, s, e, function (t2, b) {
+                var fl = u32(d, b) & 0xffffff, o = b + 8;
+                if (t2 === 'tfhd') {
+                    if (fl & 1) o += 8; // offsets here count from the moof (default-base-is-moof)
+                    if (fl & 2) o += 4;
+                    if (fl & 8) { dur0 = u32(d, o); o += 4; }
+                    if (fl & 0x10) size0 = u32(d, o);
+                } else if (t2 === 'tfdt') {
+                    dts = d[b] === 1 ? u32(d, b + 4) * 4294967296 + u32(d, b + 8) : u32(d, b + 4);
+                } else if (t2 === 'trun') {
+                    runs.push(b);
+                }
+            });
+            var off = moof;
+            runs.forEach(function (b) {
+                var ver = d[b], fl = u32(d, b) & 0xffffff, count = u32(d, b + 4), o = b + 8;
+                if (fl & 1) { off = moof + i32(d, o); o += 4; }
+                if (fl & 4) o += 4;
+                for (var i = 0; i < count; i++) {
+                    var dur = dur0, size = size0, cto = 0;
+                    if (fl & 0x100) { dur = u32(d, o); o += 4; }
+                    if (fl & 0x200) { size = u32(d, o); o += 4; }
+                    if (fl & 0x400) o += 4;
+                    if (fl & 0x800) { cto = ver === 1 ? i32(d, o) : u32(d, o); o += 4; }
+                    frames.push({ dts: dts, pts: dts + cto, start: off, end: off + size });
+                    off += size;
+                    dts += dur;
+                }
+            });
+        });
+    };
+
+    // One frame in the decoder's form: each NAL unit after a start code instead of its length, and
+    // the parameter sets ahead of every keyframe, so a change of quality needs no new decoder.
+    Fake.prototype.frameBytes = function (f) {
+        var d = f.d, p = f.start, L = this.lenSize, nals = [], key = false, total = 0;
+        while (p + L <= f.end) {
+            var len = 0;
+            for (var i = 0; i < L; i++) len = len * 256 + d[p + i];
+            p += L;
+            if (len <= 0 || p + len > f.end) break;
+            if ((d[p] & 0x1f) === 5) key = true;
+            nals.push([p, len]);
+            total += 4 + len;
+            p += len;
+        }
+        var head = key ? this.sps.length + this.pps.length : 0;
+        var out = new Uint8Array(head + total), o = 0;
+        if (key) { out.set(this.sps, 0); out.set(this.pps, this.sps.length); o = head; }
+        nals.forEach(function (x) { out[o + 3] = 1; out.set(d.subarray(x[0], x[0] + x[1]), o + 4); o += 4 + x[1]; });
+        return { key: key, bytes: out };
+    };
+
+    // Messages: type 1 carries the parameter sets; type 2 a batch of frames, each with its display
+    // time, decode time, keyframe flag, length and bytes.
+    Fake.prototype.send = function (frames) {
+        if (!this.timescale || !this.sps) return;
+        var ts = this.timescale, off = this.timestampOffset, i;
+        if (!this.configSent) {
+            var cfg = new ArrayBuffer(21 + this.sps.length + this.pps.length), cv = new DataView(cfg), cb = new Uint8Array(cfg);
+            cv.setUint8(0, 1);
+            cv.setUint32(1, this.id, true);
+            cv.setUint32(5, this.width, true);
+            cv.setUint32(9, this.height, true);
+            cv.setUint32(13, this.sps.length, true);
+            cb.set(this.sps, 17);
+            cv.setUint32(17 + this.sps.length, this.pps.length, true);
+            cb.set(this.pps, 21 + this.sps.length);
+            post(cfg);
+            this.configSent = true;
+        }
+        var conv = [], total = 21, lo = Infinity, hi = -Infinity;
         for (i = 0; i < frames.length; i++) {
-            f = frames[i];
-            var gap = f.pts - this.lastPts;
-            if (this.lastPts >= 0 && gap > 0.001 && gap < 0.2) this.frameTime = gap;
-            this.lastPts = f.pts;
-            total += 13 + (f.end - f.start);
+            var f = frames[i], c = this.frameBytes(f);
+            c.pts = f.pts / ts + off;
+            c.dts = f.dts / ts + off;
+            var gap = c.dts - this.lastDts;
+            if (this.lastDts >= 0 && gap > 0.001 && gap < 0.2) this.frameTime = gap;
+            this.lastDts = c.dts;
+            lo = Math.min(lo, c.pts);
+            hi = Math.max(hi, c.pts);
+            conv.push(c);
+            total += 21 + c.bytes.length;
         }
         var buf = new ArrayBuffer(total), view = new DataView(buf), out = new Uint8Array(buf), o = 21;
         view.setUint8(0, 2);
@@ -138,17 +315,22 @@
         view.setUint32(5, this.width, true);
         view.setUint32(9, this.height, true);
         view.setUint32(13, Math.round(this.frameTime * 1e6), true);
-        view.setUint32(17, frames.length, true);
-        for (i = 0; i < frames.length; i++) {
-            f = frames[i];
-            view.setFloat64(o, f.pts, true);
-            view.setUint8(o + 8, f.key ? 1 : 0);
-            view.setUint32(o + 9, f.end - f.start, true);
-            out.set(d.subarray(f.start, f.end), o + 13);
-            o += 13 + (f.end - f.start);
+        view.setUint32(17, conv.length, true);
+        for (i = 0; i < conv.length; i++) {
+            var x = conv[i];
+            view.setFloat64(o, x.pts, true);
+            view.setFloat64(o + 8, x.dts, true);
+            view.setUint8(o + 16, x.key ? 1 : 0);
+            view.setUint32(o + 17, x.bytes.length, true);
+            out.set(x.bytes, o + 21);
+            o += 21 + x.bytes.length;
         }
         post(buf);
-        this.addRange(frames[0].pts, frames[frames.length - 1].pts + this.frameTime);
+        // H.264 frames are shown a frame or two after they are decoded, so a video's first frame
+        // is at about 0.04 s. A browser counts that as buffered from 0; the player stalls on the
+        // gap otherwise.
+        if (lo > 0 && lo < 0.25) lo = 0;
+        this.addRange(lo, hi + this.frameTime);
     };
 
     Fake.prototype.finish = function () {
@@ -180,7 +362,7 @@
         this.finish();
     };
 
-    Fake.prototype.abort = function () { this.pending = new Uint8Array(0); this.lastPts = -1; };
+    Fake.prototype.abort = function () { this.pending = new Uint8Array(0); this.frag = null; this.lastDts = -1; };
     Fake.prototype.changeType = function (type) { this.type = type; };
 
     // The picture is under the page, so while it plays the page must not paint over it. YouTube
@@ -207,7 +389,7 @@
 
     var realAdd = MediaSource.prototype.addSourceBuffer, realRemove = MediaSource.prototype.removeSourceBuffer;
     MediaSource.prototype.addSourceBuffer = function (type) {
-        if (!nv.on() || !/^video\/webm/.test(type) || !/vp0?9/.test(type) || /vp9\.2|vp09\.0[23]/.test(type)) {
+        if (!nv.on() || !/^video\/mp4/.test(type) || !/avc[13]/.test(type)) {
             return realAdd.apply(this, arguments);
         }
         var fake = new Fake(type, nv.nextId++);
@@ -217,6 +399,7 @@
         post({ t: 'open', id: fake.id });
         this.addEventListener('sourceclose', function () { close(fake); });
         startClock();
+        lastAsk = 0;
         return fake;
     };
     MediaSource.prototype.removeSourceBuffer = function (sb) {
@@ -225,12 +408,13 @@
     };
 
     // The page's clock, and where on the screen the picture belongs.
-    var clockVideo = null, clockTimer = 0;
+    var clockVideo = null, clockTimer = 0, ticks = 0;
     function tick() {
         var fake = nv.current;
         if (!fake) return;
         var v = document.querySelector('video');
         if (!v) return;
+        if (++ticks % 4 === 0) hold1080();
         if (v !== clockVideo) {
             clockVideo = v;
             ['play', 'pause', 'playing', 'waiting', 'seeking', 'seeked', 'ratechange', 'ended'].forEach(function (n) {

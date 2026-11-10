@@ -17,7 +17,7 @@ import java.util.Map;
 import java.util.TreeMap;
 
 /**
- * Experimental: decodes the VP9 frames the page hands over (res/raw/native_video.js) onto a surface
+ * Experimental: decodes the H.264 frames the page hands over (res/raw/native_video.js) onto a surface
  * that lies under the page, in step with the page's own clock. Sound stays in the page.
  *
  * The frames are kept the way a browser keeps a video buffer: by time, replaced when the player
@@ -26,7 +26,7 @@ import java.util.TreeMap;
  */
 final class NativeVideo implements SurfaceHolder.Callback, Runnable {
     private static final String TAG = WebShellActivity.TAG;
-    private static final String MIME = "video/x-vnd.on2.vp9";
+    private static final String MIME = "video/avc";
     /** A keyframe further back than this belongs to another buffered stretch. */
     private static final long MAX_KEYFRAME_DISTANCE_US = 12_000_000;
 
@@ -40,18 +40,25 @@ final class NativeVideo implements SurfaceHolder.Callback, Runnable {
         void onRect(double x, double y, double w, double h, double pageW, double pageH);
     }
 
+    /** H.264 frames can be decoded in another order than they are shown: both times are kept. */
     private static final class Frame {
         final byte[] data;
         final boolean key;
+        final long ptsUs;
 
-        Frame(byte[] data, boolean key) {
+        Frame(byte[] data, boolean key, long ptsUs) {
             this.data = data;
             this.key = key;
+            this.ptsUs = ptsUs;
         }
     }
 
     private final Object lock = new Object();
+    /** By decode time, the order the decoder must get them in. */
     private final TreeMap<Long, Frame> store = new TreeMap<>();
+    // The stream's parameter sets (SPS, PPS), with start codes. Guarded by lock.
+    private byte[] csd0;
+    private byte[] csd1;
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final Listener listener;
     private final Thread thread;
@@ -132,6 +139,7 @@ final class NativeVideo implements SurfaceHolder.Callback, Runnable {
                 if ("open".equals(t)) {
                     session = id;
                     store.clear();
+                    csd0 = csd1 = null;
                     active = true;
                     haveClock = false;
                     running = false;
@@ -193,28 +201,45 @@ final class NativeVideo implements SurfaceHolder.Callback, Runnable {
         }
     }
 
-    /** One append: header (type, id, width, height, frame time, count), then the frames. */
+    /**
+     * Binary messages from the page. Type 1: id, width, height, then the SPS and the PPS, each after
+     * its length. Type 2: id, width, height, frame time, count, then per frame its display time,
+     * decode time, keyframe flag, length and bytes.
+     */
     void onFrames(byte[] bytes) {
         try {
             ByteBuffer b = ByteBuffer.wrap(bytes).order(ByteOrder.LITTLE_ENDIAN);
-            if (bytes.length < 21 || b.get() != 2) return;
-            int id = b.getInt(), w = b.getInt(), h = b.getInt();
-            long frameUs = Math.max(1000, Math.min(100_000, b.getInt()));
-            int count = b.getInt();
+            if (bytes.length < 17) return;
+            int type = b.get(), id = b.getInt(), w = b.getInt(), h = b.getInt();
             synchronized (lock) {
                 if (id != session) return;
                 if (w > 0 && h > 0) {
                     width = w;
                     height = h;
                 }
-                for (int i = 0; i < count && b.remaining() >= 13; i++) {
-                    long pts = (long) (b.getDouble() * 1e6);
-                    boolean key = b.get() != 0;
-                    int len = b.getInt();
-                    if (len < 0 || len > b.remaining()) break;
-                    byte[] data = new byte[len];
-                    b.get(data);
-                    insert(pts, frameUs, new Frame(data, key));
+                if (type == 1) {
+                    byte[] sps = new byte[b.getInt()];
+                    b.get(sps);
+                    byte[] pps = new byte[b.getInt()];
+                    b.get(pps);
+                    // The first ones set up the decoder; later ones travel ahead of each keyframe.
+                    if (csd0 == null) {
+                        csd0 = sps;
+                        csd1 = pps;
+                    }
+                } else if (type == 2) {
+                    long frameUs = Math.max(1000, Math.min(100_000, b.getInt()));
+                    int count = b.getInt();
+                    for (int i = 0; i < count && b.remaining() >= 21; i++) {
+                        long pts = (long) (b.getDouble() * 1e6);
+                        long dts = (long) (b.getDouble() * 1e6);
+                        boolean key = b.get() != 0;
+                        int len = b.getInt();
+                        if (len < 0 || len > b.remaining()) break;
+                        byte[] data = new byte[len];
+                        b.get(data);
+                        insert(dts, frameUs, new Frame(data, key, pts));
+                    }
                 }
                 lock.notifyAll();
             }
@@ -227,14 +252,14 @@ final class NativeVideo implements SurfaceHolder.Callback, Runnable {
      * A new frame replaces what was at its time, and with that the old frames that depended on the
      * replaced one (everything up to the next old keyframe), as a browser's buffer does.
      */
-    private void insert(long pts, long frameUs, Frame f) {
-        Map<Long, Frame> over = store.subMap(pts - 2000, pts + frameUs - 2000);
+    private void insert(long dts, long frameUs, Frame f) {
+        Map<Long, Frame> over = store.subMap(dts - 2000, dts + frameUs - 2000);
         if (!over.isEmpty()) {
             over.clear();
-            Iterator<Map.Entry<Long, Frame>> it = store.tailMap(pts, false).entrySet().iterator();
+            Iterator<Map.Entry<Long, Frame>> it = store.tailMap(dts, false).entrySet().iterator();
             while (it.hasNext() && !it.next().getValue().key) it.remove();
         }
-        store.put(pts, f);
+        store.put(dts, f);
     }
 
     /** The keyframe to start decoding from to show {@code target}; null while it has not arrived. */
@@ -271,10 +296,13 @@ final class NativeVideo implements SurfaceHolder.Callback, Runnable {
             Surface s;
             boolean act, seek, run;
             int w, h;
+            byte[] c0, c1;
             synchronized (lock) {
                 if (quit) break;
                 s = surface;
-                act = active && haveClock && width > 0;
+                act = active && haveClock && width > 0 && csd0 != null;
+                c0 = csd0;
+                c1 = csd1;
                 w = width;
                 h = height;
                 run = running;
@@ -301,7 +329,7 @@ final class NativeVideo implements SurfaceHolder.Callback, Runnable {
             try {
                 if (codec == null || codecSurface != s) {
                     if (codec != null) stop(codec);
-                    codec = start(s, w, h);
+                    codec = start(s, w, h, c0, c1);
                     codecSurface = s;
                     held = -1;
                     seek = true;
@@ -337,13 +365,15 @@ final class NativeVideo implements SurfaceHolder.Callback, Runnable {
                     int in = codec.dequeueInputBuffer(0);
                     if (in >= 0) {
                         ByteBuffer buf = codec.getInputBuffer(in);
-                        byte[] data = next.getValue().data;
-                        int len = buf != null && buf.capacity() >= data.length ? data.length : 0;
+                        Frame f = next.getValue();
+                        int len = buf != null && buf.capacity() >= f.data.length ? f.data.length : 0;
                         if (len > 0) {
                             buf.clear();
-                            buf.put(data);
+                            buf.put(f.data);
                         }
-                        codec.queueInputBuffer(in, 0, len, next.getKey(), 0);
+                        // Fed in decode order, labelled with the display time the output comes back with.
+                        codec.queueInputBuffer(in, 0, len, f.ptsUs,
+                                f.key ? MediaCodec.BUFFER_FLAG_KEY_FRAME : 0);
                         feedPos = next.getKey() + 1;
                         fed = true;
                     }
@@ -418,8 +448,10 @@ final class NativeVideo implements SurfaceHolder.Callback, Runnable {
         }
     }
 
-    private static MediaCodec start(Surface s, int w, int h) throws Exception {
+    private static MediaCodec start(Surface s, int w, int h, byte[] sps, byte[] pps) throws Exception {
         MediaFormat f = MediaFormat.createVideoFormat(MIME, w, h);
+        f.setByteBuffer("csd-0", ByteBuffer.wrap(sps));
+        f.setByteBuffer("csd-1", ByteBuffer.wrap(pps));
         // The player changes quality mid-stream; the decoder is told the largest it may see.
         f.setInteger(MediaFormat.KEY_MAX_WIDTH, 1920);
         f.setInteger(MediaFormat.KEY_MAX_HEIGHT, 1088);
