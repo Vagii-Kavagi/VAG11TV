@@ -43,6 +43,18 @@
         });
     } catch (e) { }
 
+    // 60 frames a second. Before allowing any format above 32 fps, the player checks whether the
+    // browser really reads the "framerate" part of a type: it asks once with 30 and once with an
+    // absurd rate, and expects a no to the second. A WebView ignores the parameter and says yes to
+    // both, so the player bans every 60 fps format ("capHfr"). TV engines answer as expected; so
+    // does this. The TV's H.264 decoder manages 1080p at 60 (media_codecs.xml).
+    var realIsTypeSupported = MediaSource.isTypeSupported;
+    MediaSource.isTypeSupported = function (type) {
+        var m = /framerate=([\d.]+)/.exec(type || '');
+        if (m && +m[1] > 60) return false;
+        return realIsTypeSupported.apply(this, arguments);
+    };
+
     // And it is held there: the player starts low and steps down on its own, so while a video plays
     // it is asked again whenever it is below 1080p, or below the best a video without 1080p has.
     var lastAsk = 0;

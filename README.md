@@ -73,8 +73,9 @@ past the 720p surface: 1080p plays on the TV's video plane.
 - YouTube makes H.264 only up to 480p or 720p for many videos (their 1080p is VP9 or AV1 only), so
   those play below 1080p here. Streams wider than 1920 or taller than 1088 are left out: the TV's
   decoder refuses them.
-- For some 60 frames a second videos the player leaves out the H.264 1080p it is sent and plays 720p
-  at 30. Why is not known yet.
+- 60 frames a second: the player bans every format above 32 fps unless the browser turns down an
+  absurd frame rate in `MediaSource.isTypeSupported`. A WebView does not, so the page answers that
+  probe as a TV engine would. Measured: H.264 1080p60 with no dropped frames over 20 seconds.
 - The tested TV has a 1366x768 panel, so 1080p cannot look sharper there. This is for a 1080p TV.
 - `install-to-tv.ps1` installs to internal storage (`adb install -f`), also when the TV puts new apps
   on a USB drive: on slow flash the app's data and the WebView's cache made playback stutter.
