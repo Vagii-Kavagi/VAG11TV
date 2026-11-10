@@ -43,6 +43,11 @@ final class Prefs {
         sp.edit().putBoolean("adblock", on).apply();
     }
 
+    /** Experimental: the picture on a native surface under the page. No menu entry yet. */
+    boolean nativeVideo() {
+        return sp.getBoolean("native_video", true);
+    }
+
     int mode(String cat) {
         return sp.getInt("cat_" + cat, "sponsor".equals(cat) ? AUTO : OFF);
     }

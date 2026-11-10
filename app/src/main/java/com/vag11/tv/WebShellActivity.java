@@ -8,6 +8,8 @@ import android.graphics.Color;
 import android.os.Bundle;
 import android.util.Log;
 import android.view.KeyEvent;
+import android.view.SurfaceView;
+import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.webkit.ConsoleMessage;
@@ -16,7 +18,9 @@ import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.widget.FrameLayout;
 
+import androidx.webkit.WebMessageCompat;
 import androidx.webkit.WebViewCompat;
 import androidx.webkit.WebViewFeature;
 
@@ -52,6 +56,11 @@ public class WebShellActivity extends Activity {
     private WebView web;
     private Prefs prefs;
     private boolean scriptsAtDocumentStart;
+    // Experimental native picture (NativeVideo): a surface under the page, and a black sheet over
+    // it for the times no video is on it.
+    private NativeVideo video;
+    private SurfaceView videoSurface;
+    private View videoCover;
     private final ExecutorService io = Executors.newSingleThreadExecutor();
 
     @Override
@@ -74,11 +83,19 @@ public class WebShellActivity extends Activity {
             WebView.setWebContentsDebuggingEnabled(true);
         }
 
-        web.setBackgroundColor(Color.BLACK);
+        FrameLayout root = new FrameLayout(this);
+        root.setBackgroundColor(Color.BLACK);
+        if (prefs.nativeVideo()
+                && WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_LISTENER)
+                && WebViewFeature.isFeatureSupported(WebViewFeature.WEB_MESSAGE_ARRAY_BUFFER)) {
+            setUpNativeVideo(root);
+        }
+        // With the native picture the page is see-through where YouTube draws nothing: the video.
+        web.setBackgroundColor(video != null ? Color.TRANSPARENT : Color.BLACK);
         web.addJavascriptInterface(new Bridge(), "VAG11");
 
         final String scripts = readRaw(R.raw.shell_hook) + "\n" + readRaw(R.raw.ad_block)
-                + "\n" + readRaw(R.raw.player_tune) + "\n" + readRaw(R.raw.settings_hook)
+                + "\n" + readRaw(R.raw.native_video) + "\n" + readRaw(R.raw.player_tune) + "\n" + readRaw(R.raw.settings_hook)
                 + "\n" + readRaw(R.raw.sb_engine);
         if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
             WebViewCompat.addDocumentStartJavaScript(web, scripts, Collections.singleton(TV_ORIGIN));
@@ -110,10 +127,64 @@ public class WebShellActivity extends Activity {
             }
         });
 
-        setContentView(web, new ViewGroup.LayoutParams(
+        root.addView(web, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        setContentView(root);
         web.loadUrl(TV_URL);
         web.requestFocus();
+    }
+
+    private void setUpNativeVideo(FrameLayout root) {
+        video = new NativeVideo(new NativeVideo.Listener() {
+            @Override
+            public void onShowing(boolean showing) {
+                if (videoCover != null) videoCover.setVisibility(showing ? View.GONE : View.VISIBLE);
+            }
+
+            @Override
+            public void onStats(long rendered, long dropped) {
+                if (web != null) {
+                    web.evaluateJavascript("window.__vag11nv&&window.__vag11nv.stats(" + rendered + ","
+                            + dropped + ");", null);
+                }
+            }
+
+            @Override
+            public void onRect(double x, double y, double w, double h, double pageW, double pageH) {
+                if (videoSurface == null || web == null || pageW <= 0 || pageH <= 0) return;
+                FrameLayout.LayoutParams lp = (FrameLayout.LayoutParams) videoSurface.getLayoutParams();
+                if (w < 16 || h < 16) {
+                    lp.width = lp.height = ViewGroup.LayoutParams.MATCH_PARENT;
+                    lp.leftMargin = lp.topMargin = 0;
+                } else {
+                    double sx = web.getWidth() / pageW, sy = web.getHeight() / pageH;
+                    lp.width = (int) Math.round(w * sx);
+                    lp.height = (int) Math.round(h * sy);
+                    lp.leftMargin = (int) Math.round(x * sx);
+                    lp.topMargin = (int) Math.round(y * sy);
+                }
+                videoSurface.setLayoutParams(lp);
+            }
+        });
+        videoSurface = new SurfaceView(this);
+        videoSurface.getHolder().addCallback(video);
+        root.addView(videoSurface, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        videoCover = new View(this);
+        videoCover.setBackgroundColor(Color.BLACK);
+        root.addView(videoCover, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+
+        // The page hands over frames as binary messages and its clock as text ones.
+        WebViewCompat.addWebMessageListener(web, "VAG11V", Collections.singleton(TV_ORIGIN),
+                (view, message, sourceOrigin, isMainFrame, replyProxy) -> {
+                    if (!isMainFrame || video == null) return;
+                    if (message.getType() == WebMessageCompat.TYPE_ARRAY_BUFFER) {
+                        video.onFrames(message.getArrayBuffer());
+                    } else if (message.getData() != null) {
+                        video.onText(message.getData());
+                    }
+                });
     }
 
     @Override
@@ -148,6 +219,7 @@ public class WebShellActivity extends Activity {
     @Override
     protected void onDestroy() {
         io.shutdownNow();
+        if (video != null) video.release();
         if (web != null) {
             web.destroy();
             web = null;
@@ -226,6 +298,12 @@ public class WebShellActivity extends Activity {
         @JavascriptInterface
         public void exit() {
             runOnUiThread(WebShellActivity.this::finish);
+        }
+
+        /** Whether the experimental native picture is on (res/raw/native_video.js). */
+        @JavascriptInterface
+        public boolean nativeVideo() {
+            return video != null;
         }
 
         @JavascriptInterface

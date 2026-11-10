@@ -26,6 +26,15 @@
         }).then(function (r) { av1Hardware = !!(r && r.supported && r.powerEfficient); }, function () { });
     } catch (e) { }
 
+    // With the native picture on (native_video.js) the limits are that decoder's: VP9, up to 1080p.
+    function keepNative(f) {
+        if (!f || !f.height) return true; // audio
+        var m = f.mimeType || '';
+        // Not the HDR kind (profile 2): that needs a 10-bit decoder and an HDR screen.
+        return /^video\/webm/.test(m) && /vp0?9/.test(m) && !/vp9\.2|vp09\.0[23]/.test(m)
+            && f.height <= window.__vag11nv.maxHeight * 1.06;
+    }
+
     function keep(f) {
         if (!f || !f.height) return true; // audio
         if (f.height > maxHeight) return false;
@@ -51,8 +60,11 @@
         try {
             var sd = r && r.streamingData;
             if (sd && Array.isArray(sd.adaptiveFormats)) {
-                var kept = sd.adaptiveFormats.filter(keep);
-                if (kept.some(function (f) { return f.height; })) sd.adaptiveFormats = kept;
+                var hasVideo = function (f) { return f.height; };
+                var kept = [];
+                if (window.__vag11nv && window.__vag11nv.on()) kept = sd.adaptiveFormats.filter(keepNative);
+                if (!kept.some(hasVideo)) kept = sd.adaptiveFormats.filter(keep);
+                if (kept.some(hasVideo)) sd.adaptiveFormats = kept;
                 rememberHost(sd.serverAbrStreamingUrl || (sd.adaptiveFormats[0] || {}).url);
             }
         } catch (e) { }
