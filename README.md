@@ -10,10 +10,11 @@ system WebView, and is left as it is. The additions are:
 |---|---|
 | `app/src/main/res/raw/settings_hook.js` | Adds the **Ad blocking** and **SponsorBlock** entries to YouTube's Settings page. |
 | `app/src/main/res/raw/ad_block.js` | Takes the adverts out of the data YouTube sends, before the page reads it. |
+| `app/src/main/res/raw/player_tune.js` | Keeps the player to formats this TV plays smoothly, and connects to the video server early. |
 | `app/src/main/res/raw/sb_engine.js` | Skips reported segments, or shows a "Skip · press OK" button. |
 | `app/src/main/res/raw/shell_hook.js` | Lets YouTube's own "exit" close the app. |
 | `SettingsActivity.java` | The two menus: the ad blocker's switch, and SponsorBlock's on/off with a mode for each kind of segment. |
-| `WebShellActivity.java` | The WebView, the Back key, and the request to the SponsorBlock server. |
+| `WebShellActivity.java` | The WebView, the Back key, the blank video placeholder, and the request to the SponsorBlock server. |
 
 ## Using it
 
@@ -50,4 +51,8 @@ Xiaomi MiTV-MSSP2, Android TV 9, Android System WebView 138.
   When YouTube changes those, the Settings entries can disappear until `settings_hook.js` is updated,
   and adverts can come back until `ad_block.js` is; the rest of the page keeps working.
 - A WebView is heavier than the stock app's engine, so it can feel slower on a 1 GB TV.
+- Video is drawn on the same surface as the interface, which is 720p on the tested TV, so `player_tune.js`
+  does not let the player pick anything larger. AV1 is left out because the WebView decodes it in software.
+- A video starts about 2 seconds after OK is pressed. Most of that is YouTube's own request for the
+  video's data; the shell cannot shorten it.
 - Voice search is not wired up.

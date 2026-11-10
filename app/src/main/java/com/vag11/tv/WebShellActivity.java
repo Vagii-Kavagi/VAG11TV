@@ -3,6 +3,7 @@ package com.vag11.tv;
 import android.app.Activity;
 import android.content.Intent;
 import android.content.pm.ApplicationInfo;
+import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.os.Bundle;
 import android.util.Log;
@@ -77,7 +78,8 @@ public class WebShellActivity extends Activity {
         web.addJavascriptInterface(new Bridge(), "VAG11");
 
         final String scripts = readRaw(R.raw.shell_hook) + "\n" + readRaw(R.raw.ad_block)
-                + "\n" + readRaw(R.raw.settings_hook) + "\n" + readRaw(R.raw.sb_engine);
+                + "\n" + readRaw(R.raw.player_tune) + "\n" + readRaw(R.raw.settings_hook)
+                + "\n" + readRaw(R.raw.sb_engine);
         if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
             WebViewCompat.addDocumentStartJavaScript(web, scripts, Collections.singleton(TV_ORIGIN));
             scriptsAtDocumentStart = true;
@@ -85,7 +87,7 @@ public class WebShellActivity extends Activity {
 
         web.setWebViewClient(new WebViewClient() {
             @Override
-            public void onPageStarted(WebView v, String url, android.graphics.Bitmap favicon) {
+            public void onPageStarted(WebView v, String url, Bitmap favicon) {
                 super.onPageStarted(v, url, favicon);
                 // Older WebViews: the scripts guard against running twice.
                 if (!scriptsAtDocumentStart && url != null && url.startsWith(TV_ORIGIN)) {
@@ -97,6 +99,14 @@ public class WebShellActivity extends Activity {
             @Override
             public boolean onConsoleMessage(ConsoleMessage m) {
                 return true;
+            }
+
+            // Until a video has its first frame, a WebView paints its stock placeholder over it: a
+            // grey play button, stretched to the screen. An empty picture leaves YouTube's own
+            // loading screen showing instead.
+            @Override
+            public Bitmap getDefaultVideoPoster() {
+                return Bitmap.createBitmap(1, 1, Bitmap.Config.ARGB_8888);
             }
         });
 
