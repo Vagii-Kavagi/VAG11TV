@@ -6,7 +6,7 @@ import android.content.SharedPreferences;
 import org.json.JSONException;
 import org.json.JSONObject;
 
-/** SponsorBlock choices, kept on the TV only. */
+/** SponsorBlock and ad-blocking choices, kept on the TV only. */
 final class Prefs {
     static final int AUTO = 0;
     static final int ASK = 1;
@@ -35,6 +35,14 @@ final class Prefs {
         sp.edit().putBoolean("enabled", on).apply();
     }
 
+    boolean adBlock() {
+        return sp.getBoolean("adblock", true);
+    }
+
+    void setAdBlock(boolean on) {
+        sp.edit().putBoolean("adblock", on).apply();
+    }
+
     int mode(String cat) {
         return sp.getInt("cat_" + cat, "sponsor".equals(cat) ? AUTO : OFF);
     }
@@ -43,14 +51,15 @@ final class Prefs {
         sp.edit().putInt("cat_" + cat, mode).apply();
     }
 
-    /** The shape sb_engine.js reads: {"enabled":true,"cats":{"sponsor":0,...}}. */
+    /** The shape the page scripts read: {"enabled":true,"cats":{"sponsor":0,...},"adblock":true}. */
     String json() {
         try {
             JSONObject cats = new JSONObject();
             for (String c : CATS) cats.put(c, mode(c));
-            return new JSONObject().put("enabled", enabled()).put("cats", cats).toString();
+            return new JSONObject().put("enabled", enabled()).put("cats", cats)
+                    .put("adblock", adBlock()).toString();
         } catch (JSONException e) {
-            return "{\"enabled\":false,\"cats\":{}}";
+            return "{\"enabled\":false,\"cats\":{},\"adblock\":false}";
         }
     }
 }

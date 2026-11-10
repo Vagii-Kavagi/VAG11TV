@@ -12,33 +12,60 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
-/** The SponsorBlock menu: one switch, then a mode per segment category. OK cycles the mode. */
-public class SponsorBlockSettingsActivity extends Activity {
+/**
+ * The two menus opened from YouTube's Settings page. EXTRA_PAGE picks one:
+ * "ads" is the ad blocker's switch; anything else is SponsorBlock, with one switch and then a mode
+ * per segment category. OK changes the focused row.
+ */
+public class SettingsActivity extends Activity {
+    static final String EXTRA_PAGE = "page";
+    static final String PAGE_ADS = "ads";
+
     private Prefs prefs;
+    private LinearLayout list;
 
     @Override
     protected void onCreate(Bundle b) {
         super.onCreate(b);
         prefs = new Prefs(this);
 
-        LinearLayout list = new LinearLayout(this);
+        list = new LinearLayout(this);
         list.setOrientation(LinearLayout.VERTICAL);
         int pad = dp(48);
         list.setPadding(pad * 2, pad, pad * 2, pad);
 
-        TextView title = text("SponsorBlock", 30, Color.WHITE);
-        title.setPadding(dp(20), 0, 0, dp(6));
-        list.addView(title);
-        TextView sub = text("Skips segments reported by the SponsorBlock community (sponsor.ajay.app). "
-                + "Press OK to change a row, Back to return.", 15, 0xFFAAAAAA);
-        sub.setPadding(dp(20), 0, 0, dp(22));
-        list.addView(sub);
+        TextView first = PAGE_ADS.equals(getIntent().getStringExtra(EXTRA_PAGE))
+                ? buildAds() : buildSponsorBlock();
 
+        ScrollView scroll = new ScrollView(this);
+        scroll.setBackgroundColor(0xFF0F0F0F);
+        scroll.addView(list);
+        setContentView(scroll);
+        first.requestFocus();
+    }
+
+    private TextView buildAds() {
+        header("Ad blocking", "Removes adverts before and during videos, the Home banner and "
+                + "Sponsored tiles. A change applies to the next video or page you open. "
+                + "Press OK to change, Back to return.");
+        TextView sw = row();
+        sw.setText("Block ads:  " + onOff(prefs.adBlock()));
+        sw.setOnClickListener(v -> {
+            prefs.setAdBlock(!prefs.adBlock());
+            sw.setText("Block ads:  " + onOff(prefs.adBlock()));
+        });
+        list.addView(sw);
+        return sw;
+    }
+
+    private TextView buildSponsorBlock() {
+        header("SponsorBlock", "Skips segments reported by the SponsorBlock community "
+                + "(sponsor.ajay.app). Press OK to change a row, Back to return.");
         TextView master = row();
-        bindMaster(master);
+        master.setText("SponsorBlock:  " + onOff(prefs.enabled()));
         master.setOnClickListener(v -> {
             prefs.setEnabled(!prefs.enabled());
-            bindMaster(master);
+            master.setText("SponsorBlock:  " + onOff(prefs.enabled()));
         });
         list.addView(master);
 
@@ -46,27 +73,27 @@ public class SponsorBlockSettingsActivity extends Activity {
             final String cat = Prefs.CATS[i];
             final String name = Prefs.CAT_NAMES[i];
             TextView r = row();
-            bindCat(r, cat, name);
+            r.setText(name + ":  " + Prefs.MODE_NAMES[prefs.mode(cat)]);
             r.setOnClickListener(v -> {
                 prefs.setMode(cat, (prefs.mode(cat) + 1) % Prefs.MODE_NAMES.length);
-                bindCat(r, cat, name);
+                r.setText(name + ":  " + Prefs.MODE_NAMES[prefs.mode(cat)]);
             });
             list.addView(r);
         }
-
-        ScrollView scroll = new ScrollView(this);
-        scroll.setBackgroundColor(0xFF0F0F0F);
-        scroll.addView(list);
-        setContentView(scroll);
-        master.requestFocus();
+        return master;
     }
 
-    private void bindMaster(TextView v) {
-        v.setText("SponsorBlock:  " + (prefs.enabled() ? "On" : "Off"));
+    private static String onOff(boolean on) {
+        return on ? "On" : "Off";
     }
 
-    private void bindCat(TextView v, String cat, String name) {
-        v.setText(name + ":  " + Prefs.MODE_NAMES[prefs.mode(cat)]);
+    private void header(String titleText, String subText) {
+        TextView title = text(titleText, 30, Color.WHITE);
+        title.setPadding(dp(20), 0, 0, dp(6));
+        list.addView(title);
+        TextView sub = text(subText, 15, 0xFFAAAAAA);
+        sub.setPadding(dp(20), 0, 0, dp(22));
+        list.addView(sub);
     }
 
     private TextView row() {

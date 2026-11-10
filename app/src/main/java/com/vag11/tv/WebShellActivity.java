@@ -35,8 +35,9 @@ import java.util.concurrent.Executors;
 /**
  * A shell around YouTube's own TV interface (youtube.com/tv), opened signed out.
  *
- * The page is YouTube's and is left as it is. The only additions are a SponsorBlock entry in its
- * Settings page (res/raw/settings_hook.js) and the segment skipper (res/raw/sb_engine.js).
+ * The page is YouTube's. The additions are two entries in its Settings page
+ * (res/raw/settings_hook.js): an ad blocker (res/raw/ad_block.js) and SponsorBlock
+ * (res/raw/sb_engine.js).
  */
 public class WebShellActivity extends Activity {
     static final String TAG = "VAG11TV";
@@ -75,8 +76,8 @@ public class WebShellActivity extends Activity {
         web.setBackgroundColor(Color.BLACK);
         web.addJavascriptInterface(new Bridge(), "VAG11");
 
-        final String scripts = readRaw(R.raw.shell_hook) + "\n" + readRaw(R.raw.settings_hook)
-                + "\n" + readRaw(R.raw.sb_engine);
+        final String scripts = readRaw(R.raw.shell_hook) + "\n" + readRaw(R.raw.ad_block)
+                + "\n" + readRaw(R.raw.settings_hook) + "\n" + readRaw(R.raw.sb_engine);
         if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
             WebViewCompat.addDocumentStartJavaScript(web, scripts, Collections.singleton(TV_ORIGIN));
             scriptsAtDocumentStart = true;
@@ -121,9 +122,10 @@ public class WebShellActivity extends Activity {
         super.onResume();
         if (web == null) return;
         web.onResume();
-        // Coming back from the SponsorBlock menu: hand the page the new choices.
+        // Coming back from one of the menus: hand the page the new choices.
         web.evaluateJavascript(
-                "window.__vag11sb&&window.__vag11sb.setConfig(" + prefs.json() + ");", null);
+                "window.__vag11sb&&window.__vag11sb.setConfig(" + prefs.json() + ");"
+                        + "window.__vag11ads&&window.__vag11ads.set(" + prefs.adBlock() + ");", null);
         web.requestFocus();
     }
 
@@ -222,9 +224,10 @@ public class WebShellActivity extends Activity {
         }
 
         @JavascriptInterface
-        public void openSettings() {
+        public void openSettings(final String page) {
             runOnUiThread(() -> startActivity(
-                    new Intent(WebShellActivity.this, SponsorBlockSettingsActivity.class)));
+                    new Intent(WebShellActivity.this, SettingsActivity.class)
+                            .putExtra(SettingsActivity.EXTRA_PAGE, page)));
         }
 
         /** Answers through window.__vag11sb.onSegments(videoId, [...]). */

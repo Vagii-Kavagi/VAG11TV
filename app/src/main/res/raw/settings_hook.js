@@ -1,8 +1,8 @@
-// Adds one "SponsorBlock" entry to YouTube's own Settings page.
+// Adds two entries to YouTube's own Settings page: "Ad blocking" and "SponsorBlock".
 //
-// The page builds Settings from a JSON response, so the entry is added to that data and YouTube draws
-// and focuses it like its own rows. Choosing it sends a command only this file knows, which is caught
-// where the page resolves commands and opens the native SponsorBlock menu.
+// The page builds Settings from a JSON response, so the entries are added to that data and YouTube
+// draws and focuses them like its own rows. Choosing one sends a command only this file knows, which
+// is caught where the page resolves commands and opens that entry's native menu.
 (function () {
     if (window.top !== window || window.__vag11settings) return;
     window.__vag11settings = true;
@@ -30,6 +30,29 @@
         };
     }
 
+    var ADS_CATEGORY_ID = 'SETTING_CAT_VAG11_ADBLOCK';
+
+    // An action row, not one of YouTube's own switches: those show the state YouTube stores for
+    // its own settings and ignore one it does not know.
+    function adsEntry() {
+        return {
+            settingCategoryCollectionRenderer: {
+                title: { runs: [{ text: 'Ad blocking' }] },
+                categoryId: ADS_CATEGORY_ID,
+                focused: false,
+                items: [{
+                    settingActionRenderer: {
+                        title: { runs: [{ text: 'Ad blocking' }] },
+                        summary: { runs: [{ text: 'Removes adverts before and during videos, the Home banner and Sponsored tiles.' }] },
+                        actionLabel: { runs: [{ text: 'Open ad blocking' }] },
+                        itemId: 'VAG11_ADBLOCK',
+                        serviceEndpoint: { vag11OpenAdBlock: {} }
+                    }
+                }]
+            }
+        };
+    }
+
     function isSettings(r) {
         return r && Array.isArray(r.items) && r.items.length > 0 && r.items[0] &&
             r.items[0].settingCategoryCollectionRenderer;
@@ -45,7 +68,7 @@
                     return c && c.categoryId === CATEGORY_ID;
                 });
                 // After YouTube's first, untitled group (Premium, Autoplay, Restricted mode...).
-                if (!has) r.items.splice(1, 0, entry());
+                if (!has) r.items.splice(1, 0, adsEntry(), entry());
             }
         } catch (e) {
             bridge.log('settings entry: ' + e);
@@ -64,7 +87,11 @@
                 var orig = inst.resolveCommand;
                 inst.resolveCommand = function (cmd) {
                     if (cmd && cmd.vag11OpenSponsorBlock) {
-                        bridge.openSettings();
+                        bridge.openSettings('sponsorblock');
+                        return true;
+                    }
+                    if (cmd && cmd.vag11OpenAdBlock) {
+                        bridge.openSettings('ads');
                         return true;
                     }
                     return orig.apply(this, arguments);
