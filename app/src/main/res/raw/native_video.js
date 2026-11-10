@@ -183,10 +183,25 @@
     Fake.prototype.abort = function () { this.pending = new Uint8Array(0); this.lastPts = -1; };
     Fake.prototype.changeType = function (type) { this.type = type; };
 
+    // The picture is under the page, so while it plays the page must not paint over it. YouTube
+    // paints black in two places there: the body and its player element (ytlr-player). Other
+    // screens keep their black.
+    var SEE_THROUGH = 'vag11-native-video';
+    var seeThroughStyle = document.createElement('style');
+    seeThroughStyle.textContent = 'html.' + SEE_THROUGH + ',html.' + SEE_THROUGH + ' body,html.'
+        + SEE_THROUGH + ' ytlr-player{background:transparent!important}';
+    function seeThrough(on) {
+        var root = document.documentElement;
+        if (!root) return;
+        if (on && !seeThroughStyle.parentNode) (document.head || root).appendChild(seeThroughStyle);
+        root.classList.toggle(SEE_THROUGH, on);
+    }
+
     function close(fake) {
         fake.closed = true;
         if (nv.current !== fake) return;
         nv.current = null;
+        seeThrough(false);
         post({ t: 'stop', id: fake.id });
     }
 
@@ -198,6 +213,7 @@
         var fake = new Fake(type, nv.nextId++);
         if (nv.current) nv.current.closed = true;
         nv.current = fake;
+        seeThrough(true);
         post({ t: 'open', id: fake.id });
         this.addEventListener('sourceclose', function () { close(fake); });
         startClock();
