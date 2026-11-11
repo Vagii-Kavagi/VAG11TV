@@ -9,7 +9,7 @@
 // lookup, which carries only the first 4 characters of the SHA-256 of the video id.
 (function () {
     if (window.top !== window || window.__vag11) return;
-    window.__vag11 = { version: '1.0.6' };
+    window.__vag11 = { version: '1.1.4' };
 
     // ---- choices -------------------------------------------------------------------------------
 
@@ -67,9 +67,11 @@
         return x && typeof x === 'object' && (x.adSlotRenderer || x.tvMastheadRenderer);
     }
 
-    // Feeds are a few levels of lists of shelves of tiles, so the walk is bounded by depth.
+    // Advert entries are taken out of any list in the response, and an advert held directly in a
+    // field is dropped. The TV interface nests feeds deeply (browse > surface > sections > shelves >
+    // lists > tiles), deeper than the 14 levels this walk used to stop at, so it goes to 40.
     function sweep(node, depth) {
-        if (!node || typeof node !== 'object' || depth > 14) return;
+        if (!node || typeof node !== 'object' || depth > 40) return;
         if (Array.isArray(node)) {
             for (var i = node.length - 1; i >= 0; i--) {
                 if (isAdItem(node[i])) { node.splice(i, 1); adStats.feedAds++; }
@@ -79,7 +81,9 @@
         }
         for (var k in node) {
             var v = node[k];
-            if (v && typeof v === 'object') sweep(v, depth + 1);
+            if (!v || typeof v !== 'object') continue;
+            if (k === 'adSlotRenderer' || k === 'tvMastheadRenderer') { delete node[k]; adStats.feedAds++; continue; }
+            sweep(v, depth + 1);
         }
     }
 
@@ -91,10 +95,8 @@
             if (r.adBreakHeartbeatParams) delete r.adBreakHeartbeatParams;
             adStats.videos++;
         }
-        if (r.contents || r.continuationContents || r.onResponseReceivedActions) {
-            sweep(r.contents, 0);
-            sweep(r.continuationContents, 0);
-            sweep(r.onResponseReceivedActions, 0);
+        for (var key in r) {
+            if (key !== 'entries' && r[key] && typeof r[key] === 'object') sweep(r[key], 0);
         }
         if (Array.isArray(r.entries)) {
             var before = r.entries.length;
@@ -184,18 +186,6 @@
     // ---- one hook on YouTube's data ------------------------------------------------------------
 
     var parse = JSON.parse;
-    // Diagnosis: shows how adverts that got through are packaged (renderer names around them).
-    var adProbeLeft = 6;
-    function probeAds(text) {
-        if (adProbeLeft <= 0 || typeof text !== 'string') return;
-        var re = /Sponsored|"isAd":true|adInfoRenderer|AdRenderer"|adBadge|AD_BADGE|promoted/g, m, n = 0;
-        while ((m = re.exec(text)) && n < 2 && adProbeLeft > 0) {
-            n++; adProbeLeft--;
-            var s = text.slice(Math.max(0, m.index - 900), m.index + 200);
-            var names = (s.match(/"[a-zA-Z]+Renderer"|"[a-zA-Z]*[Aa]d[A-Z][a-zA-Z]*"/g) || []).filter(function (x, i, a) { return a.indexOf(x) === i; });
-            log('ad probe [' + m[0] + ']: ' + names.join(' '));
-        }
-    }
     function edit(r) {
         if (r && typeof r === 'object') {
             try { if (cfg.adblock) cleanAds(r); } catch (e) { log('ad block: ' + e); }
@@ -204,7 +194,6 @@
         return r;
     }
     JSON.parse = function () {
-        try { probeAds(arguments[0]); } catch (e) { }
         return edit(parse.apply(this, arguments));
     };
 
@@ -214,11 +203,75 @@
     if (window.Response && Response.prototype.json) {
         Response.prototype.json = function () {
             return this.text().then(function (text) {
-                try { probeAds(text); } catch (e) { }
                 return edit(parse(text));
             });
         };
     }
+
+    // On screen. On Cobalt the TV interface gets its feeds in a binary format, so the adverts in
+    // them (Home tiles, the banner at the top) cannot be taken out of the data. They are hidden
+    // instead: YouTube draws a feed advert as ytlr-ad-slot-renderer. Any other element carrying a
+    // "Sponsored" badge is hidden at its nearest advert-type ancestor, and its name logged once.
+    var adStyle = document.createElement('style');
+    adStyle.textContent = 'ytlr-ad-slot-renderer{display:none!important}';
+    // Text nodes containing "Sponsored", also inside shadow roots, which ordinary searches miss.
+    function findSponsored(root, out, depth) {
+        if (!root || depth > 12) return;
+        var walker = document.createTreeWalker(root, 5 /* elements and text */, null, false), n;
+        while ((n = walker.nextNode())) {
+            if (n.nodeType === 3) {
+                if (n.nodeValue && n.nodeValue.indexOf('Sponsored') >= 0) out.push(n);
+            } else if (n.shadowRoot) {
+                findSponsored(n.shadowRoot, out, depth + 1);
+            }
+        }
+    }
+    // The parent, stepping out of a shadow root to its host.
+    function up(e) {
+        if (e.parentElement) return e.parentElement;
+        var root = e.getRootNode && e.getRootNode();
+        return root && root.host ? root.host : null;
+    }
+    function moveFocusOn() {
+        setTimeout(function () {
+            var t = document.activeElement || document.body;
+            ['keydown', 'keyup'].forEach(function (type) {
+                var ev = new KeyboardEvent(type, { key: 'ArrowRight', code: 'ArrowRight', keyCode: 39, which: 39, bubbles: true, cancelable: true });
+                try { Object.defineProperty(ev, 'keyCode', { get: function () { return 39; } }); } catch (e) { }
+                try { Object.defineProperty(ev, 'which', { get: function () { return 39; } }); } catch (e) { }
+                t.dispatchEvent(ev);
+            });
+            log('moved focus off a hidden advert');
+        }, 0);
+    }
+    function hideAds() {
+        if (!cfg.adblock) { if (adStyle.parentNode) adStyle.parentNode.removeChild(adStyle); return; }
+        if (!adStyle.parentNode) (document.head || document.documentElement).appendChild(adStyle);
+        if (!document.body) return;
+        var found = [];
+        findSponsored(document.body, found, 0);
+        for (var i = 0; i < found.length; i++) {
+            var chain = [], target = null;
+            for (var e = found[i].parentElement || up(found[i]), d = 0; e && d < 24; e = up(e), d++) {
+                var tag = e.tagName.toLowerCase();
+                chain.push(tag);
+                if (tag === 'ytlr-ad-slot-renderer' || tag === 'ytlr-tile-renderer' || /(^|-)(ad|ads|masthead|promo|promoted)(-|$)/.test(tag)) {
+                    target = e;
+                    if (tag !== 'ytlr-tile-renderer') break; // prefer the ad wrapper above the tile when there is one
+                }
+                if (tag === 'ytlr-shelf-renderer' || tag === 'body') break;
+            }
+            if (target && target.style.display !== 'none') {
+                log('hid an advert on screen: ' + chain.join(' < '));
+                // Hidden but still focused (it is often the first tile, focused at start): OK would
+                // open it. Focus moves on to the next tile, as a press of Right would.
+                if (target.contains(document.activeElement)) moveFocusOn();
+                target.style.setProperty('display', 'none', 'important');
+                adStats.feedAds++;
+            }
+        }
+    }
+    setInterval(function () { try { hideAds(); } catch (e) { log('hide ads: ' + e); } }, 1000);
 
     // ---- the menus -----------------------------------------------------------------------------
     //
@@ -292,7 +345,9 @@
             'box-sizing:border-box', 'padding:6vh 3vw', 'overflow:hidden',
             'background:rgba(24,24,24,0.98)', 'box-shadow:-1vw 0 3vw rgba(0,0,0,0.6)'
         ].join(';'));
-        menu = { page: page, rows: menuRows(page), index: 0, el: panel };
+        // armed after the press that opened the menu is released, so that press cannot change a row
+        menu = { page: page, rows: menuRows(page), index: 0, el: panel, armed: false };
+        setTimeout(function () { if (menu) menu.armed = true; }, 600);
         (document.body || document.documentElement).appendChild(panel);
         drawMenu();
     }
@@ -315,7 +370,8 @@
         if (!menu) return;
         e.preventDefault();
         e.stopImmediatePropagation();
-        if (e.type !== 'keydown') return;
+        if (e.type === 'keyup') { menu.armed = true; return; }
+        if (e.type !== 'keydown' || !menu.armed || e.repeat) return;
         var k = e.keyCode, row = menu.rows[menu.index];
         if (BACK_KEYS[k]) { closeMenu(); return; }
         if (k === 38) moveFocus(-1);
@@ -636,5 +692,5 @@
         return { cfg: cfg, ads: adStats, vid: curVid, segs: segs, t: v ? v.currentTime : null, d: v ? v.duration : null };
     };
     window.__vag11.openMenu = openMenu;
-    log('loaded ' + window.__vag11.version);
+    log('loaded ' + window.__vag11.version + ', ad blocking ' + (cfg.adblock ? 'on' : 'off'));
 })();

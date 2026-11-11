@@ -6,7 +6,8 @@ plays video the way the stock YouTube app does (hardware video plane, instant st
 
 - `vag11.user.js`: that script (ad blocking, the Settings entries and their menus, SponsorBlock).
   Released from the public repo [Vagii-Kavagi/VAG11TV-script](https://github.com/Vagii-Kavagi/VAG11TV-script)
-  as `v.js`, tagged `1.x.y`; the app loads `cdn.jsdelivr.net/gh/Vagii-Kavagi/VAG11TV-script@1/v.js`.
+  as `v.js`, tagged `1.x.y`. Each build loads one exact tag (`SCRIPT_VERSION` in `build_cobalt.py`):
+  jsDelivr's `@1` alias lagged by hours, which left the TV on an older script.
 - `build_cobalt.py`: makes the APK from the TizenTubeCobalt base (BSD-3-Clause), checked against
   its published SHA-256, by same-length replacements only (script address, package name, label),
   then aligns and signs it with this PC's debug key.
@@ -26,4 +27,9 @@ Tried on a MiTV-MSSP2 (Android 9):
   The skip goes through YouTube's player (`seekTo`); set on the video element alone it did not stick.
 - SponsorBlock segments are marked on YouTube's progress bar (script 1.0.3), one mark per segment
   whose category is not Off, in SponsorBlock's colours.
+- Ad blocking on Cobalt: feed adverts are taken out of the data at any depth; when the script loads
+  after YouTube has read the first Home feed, the advert (`ytlr-ad-slot-renderer`, also searched
+  inside shadow DOMs) is hidden on screen and focus moved off it. Seen on two fresh starts: Home
+  clean, focus on the first real tile.
+- The Settings menus ignore the press that opens them: that press used to flip "Block ads" off.
 - The script logs to the system log as warnings: `adb logcat -s cobalt:* | grep VAG11`.

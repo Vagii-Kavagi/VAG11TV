@@ -7,8 +7,8 @@ TV engine, Cobalt, built with a hook that loads one script into youtube.com/tv. 
 against the published SHA-256, then changed only by same-length replacements, so no offsets move:
 
   - lib/armeabi-v7a/libchrobalt.so: the script address, to the VAG11 script (cobalt/vag11.user.js),
-    served by jsDelivr from the public repo Vagii-Kavagi/VAG11TV-script. "@1" is the newest 1.x tag,
-    so a script release needs no new APK, and only tagged versions are ever loaded.
+    served by jsDelivr from the public repo Vagii-Kavagi/VAG11TV-script, at the exact tag in
+    SCRIPT_VERSION.
   - AndroidManifest.xml: the package name, so it installs as its own app, and
     the label.
   - the launcher icon and TV banner: VAG11's (cobalt/art), same files and sizes.
@@ -32,7 +32,12 @@ BASES = {
 }
 
 OLD_URL = b"https://cdn.jsdelivr.net/npm/@foxreis/tizentube/dist/userScript.js?v="
-NEW_URL = b"https://cdn.jsdelivr.net/gh/Vagii-Kavagi/VAG11TV-script@1/v.js?v="
+# The script version this build loads. Exact, not "@1": jsDelivr's version aliases lagged by hours
+# (measured 2026-11-11), which left the TV on an older script. A release is a tag in
+# Vagii-Kavagi/VAG11TV-script and a rebuild here. Five characters at most, or the address no longer
+# fits in the engine's 69 bytes.
+SCRIPT_VERSION = "1.1.4"
+NEW_URL = ("https://cdn.jsdelivr.net/gh/Vagii-Kavagi/VAG11TV-script@%s/v.js?v=" % SCRIPT_VERSION).encode()
 
 OLD_PACKAGE = "io.gh.reisxd.tizentube.cobalt"
 NEW_PACKAGE = "com.vag11.tv.cobalt.youtubetv"
