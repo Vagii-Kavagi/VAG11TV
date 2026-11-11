@@ -9,7 +9,7 @@
 // lookup, which carries only the first 4 characters of the SHA-256 of the video id.
 (function () {
     if (window.top !== window || window.__vag11) return;
-    window.__vag11 = { version: '1.0.4' };
+    window.__vag11 = { version: '1.0.6' };
 
     // ---- choices -------------------------------------------------------------------------------
 
@@ -184,14 +184,41 @@
     // ---- one hook on YouTube's data ------------------------------------------------------------
 
     var parse = JSON.parse;
-    JSON.parse = function () {
-        var r = parse.apply(this, arguments);
+    // Diagnosis: shows how adverts that got through are packaged (renderer names around them).
+    var adProbeLeft = 6;
+    function probeAds(text) {
+        if (adProbeLeft <= 0 || typeof text !== 'string') return;
+        var re = /Sponsored|"isAd":true|adInfoRenderer|AdRenderer"|adBadge|AD_BADGE|promoted/g, m, n = 0;
+        while ((m = re.exec(text)) && n < 2 && adProbeLeft > 0) {
+            n++; adProbeLeft--;
+            var s = text.slice(Math.max(0, m.index - 900), m.index + 200);
+            var names = (s.match(/"[a-zA-Z]+Renderer"|"[a-zA-Z]*[Aa]d[A-Z][a-zA-Z]*"/g) || []).filter(function (x, i, a) { return a.indexOf(x) === i; });
+            log('ad probe [' + m[0] + ']: ' + names.join(' '));
+        }
+    }
+    function edit(r) {
         if (r && typeof r === 'object') {
             try { if (cfg.adblock) cleanAds(r); } catch (e) { log('ad block: ' + e); }
             try { addSettingsEntries(r); } catch (e) { log('settings: ' + e); }
         }
         return r;
+    }
+    JSON.parse = function () {
+        try { probeAds(arguments[0]); } catch (e) { }
+        return edit(parse.apply(this, arguments));
     };
+
+    // The page also reads responses with fetch(...).json(), which never goes through JSON.parse:
+    // on Cobalt the Home feed arrives that way, so its adverts got past the hook above. Read as
+    // text and parsed here, those responses get the same treatment.
+    if (window.Response && Response.prototype.json) {
+        Response.prototype.json = function () {
+            return this.text().then(function (text) {
+                try { probeAds(text); } catch (e) { }
+                return edit(parse(text));
+            });
+        };
+    }
 
     // ---- the menus -----------------------------------------------------------------------------
     //
