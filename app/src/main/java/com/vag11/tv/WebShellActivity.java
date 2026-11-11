@@ -96,7 +96,7 @@ public class WebShellActivity extends Activity {
 
         final String scripts = readRaw(R.raw.shell_hook) + "\n" + readRaw(R.raw.ad_block)
                 + "\n" + readRaw(R.raw.native_video) + "\n" + readRaw(R.raw.player_tune) + "\n" + readRaw(R.raw.settings_hook)
-                + "\n" + readRaw(R.raw.sb_engine);
+                + "\n" + readRaw(R.raw.sb_engine) + "\n" + readRaw(R.raw.preload);
         if (WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
             WebViewCompat.addDocumentStartJavaScript(web, scripts, Collections.singleton(TV_ORIGIN));
             scriptsAtDocumentStart = true;

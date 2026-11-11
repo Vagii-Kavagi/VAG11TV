@@ -57,6 +57,14 @@ Xiaomi MiTV-MSSP2, Android TV 9, Android System WebView 138.
   video's data; the shell cannot shorten it.
 - Voice search is not wired up.
 
+## Starting sooner: preloading
+
+Most of the wait after OK is YouTube's video servers: two round trips of about a second each from the
+tested TV. YouTube's TV player can load a video ahead of time, the way the stock apps feel instant,
+but the TV page never asks it to. `preload.js` does: a video tile that stays selected for half a
+second is preloaded (not on the watch page, at most one every 1.5 s). Measured with the remote,
+OK to first picture: 0.8 to 2.2 s, against about 5 s without.
+
 ## Experimental: native picture (branch `native-video`)
 
 On this branch the picture is not drawn by the WebView. YouTube's player still chooses the quality,
