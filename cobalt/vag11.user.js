@@ -9,7 +9,7 @@
 // lookup, which carries only the first 4 characters of the SHA-256 of the video id.
 (function () {
     if (window.top !== window || window.__vag11) return;
-    window.__vag11 = { version: '1.0.2' };
+    window.__vag11 = { version: '1.0.3' };
 
     // ---- choices -------------------------------------------------------------------------------
 
@@ -468,6 +468,56 @@
         else hide();
     }
 
+    // Marks on YouTube's progress bar, one per segment whose category is not Off, in the colours the
+    // SponsorBlock project uses. The bar is ytlr-progress-bar; its track is the wide, few pixels high
+    // bar inside (its class names change with YouTube releases, so it is found by its shape). YouTube
+    // rebuilds the bar, so the marks are put back when they have been dropped.
+    var SEG_COLORS = {
+        sponsor: '#00d400', selfpromo: '#ffff00', interaction: '#cc00ff', intro: '#00ffff',
+        outro: '#0202ed', preview: '#008fd6', music_offtopic: '#ff9900', filler: '#7300ff'
+    };
+    var marks = null;
+
+    function findTrack(bar) {
+        var br = bar.getBoundingClientRect(), best = null, bestW = 0;
+        if (br.width <= 0) return null;
+        var divs = bar.querySelectorAll('div');
+        for (var i = 0; i < divs.length; i++) {
+            var r = divs[i].getBoundingClientRect();
+            if (r.height > 0 && r.height <= 10 && r.width > br.width * 0.8 && r.width > bestW) {
+                best = divs[i];
+                bestW = r.width;
+            }
+        }
+        return best;
+    }
+
+    function drawMarks(v) {
+        var show = cfg.sb && v && segs.length && isFinite(v.duration) && v.duration > 0;
+        var list = !show ? [] : segs.filter(function (s) { return cfg.cats[s.cat] !== OFF && isThisVideo(v, s); });
+        var key = list.length ? curVid + '|' + Math.round(v.duration) + '|' + list.map(function (s) {
+            return s.cat + s.start.toFixed(1);
+        }).join(',') : '';
+        if (marks && marks.isConnected && marks.getAttribute('data-key') === key) return;
+        if (marks && marks.parentNode) marks.parentNode.removeChild(marks);
+        marks = null;
+        if (!key) return;
+        var bar = document.querySelector('ytlr-progress-bar');
+        var track = bar && findTrack(bar);
+        if (!track) return;
+        marks = el('div', 'position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;z-index:1');
+        marks.setAttribute('data-key', key);
+        list.forEach(function (s) {
+            marks.appendChild(el('div', [
+                'position:absolute', 'top:0', 'height:100%',
+                'left:' + (s.start / v.duration * 100) + '%',
+                'width:' + Math.max(0.3, (s.end - s.start) / v.duration * 100) + '%',
+                'background:' + (SEG_COLORS[s.cat] || '#fff')
+            ].join(';')));
+        });
+        track.appendChild(marks);
+    }
+
     function tick() {
         var id = vidFromUrl();
         if (id !== curVid) {
@@ -485,6 +535,7 @@
             }
         }
         var v = videoEl();
+        try { drawMarks(id ? v : null); } catch (e) { log('marks: ' + e); }
         if (!v || !id || !cfg.sb || !segs.length) {
             if (askSeg) hide();
             return;
