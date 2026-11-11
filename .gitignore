@@ -12,3 +12,6 @@ keystore.properties
 base/
 out/
 saved/
+
+# Python cache
+__pycache__/

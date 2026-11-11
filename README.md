@@ -1,22 +1,54 @@
 # VAG11TV
 
-A small Android TV app (`com.vag11.tv`) that opens YouTube's own TV interface, `youtube.com/tv`, signed
-out, and adds two things to it: an **ad blocker** and **SponsorBlock**.
+YouTube for Android TV, signed out, with **ad blocking** and **SponsorBlock** built into YouTube's own
+Settings. It runs on Cobalt, the open-source engine behind YouTube's TV app, so videos start instantly
+and play on the TV's hardware video decoder, up to 1080p at 60 fps.
 
-Nothing of YouTube's is copied into this repo. The interface is loaded from YouTube each time, in the
-system WebView, and is left as it is. The additions are:
+> **For Android TV and Google TV devices with an ARMv7 (32-bit ARM) processor**, Android 7.0 or newer.
+> 64-bit ARM TVs and boxes run it too, as they also run 32-bit ARM apps. It does not run on x86 devices,
+> and it is made for a TV remote, not a phone or a touchscreen.
 
-| File | What it does |
-|---|---|
-| `app/src/main/res/raw/settings_hook.js` | Adds the **Ad blocking** and **SponsorBlock** entries to YouTube's Settings page. |
-| `app/src/main/res/raw/ad_block.js` | Takes the adverts out of the data YouTube sends, before the page reads it. |
-| `app/src/main/res/raw/player_tune.js` | Keeps the player to formats this TV plays smoothly, and connects to the video server early. |
-| `app/src/main/res/raw/sb_engine.js` | Skips reported segments, or shows a "Skip · press OK" button. |
-| `app/src/main/res/raw/shell_hook.js` | Lets YouTube's own "exit" close the app. |
-| `SettingsActivity.java` | The two menus: the ad blocker's switch, and SponsorBlock's on/off with a mode for each kind of segment. |
-| `WebShellActivity.java` | The WebView, the Back key, the blank video placeholder, and the request to the SponsorBlock server. |
+## Install
+
+1. Download `VAG11TV-<version>-armeabi-v7a.apk` from [Releases](https://github.com/Vagii-Kavagi/VAG11TV/releases).
+2. Copy it to the TV (a USB stick, [LocalSend](https://localsend.org) or the Downloader app) and open it
+   there, or install it from a computer with `adb install VAG11TV-<version>-armeabi-v7a.apk`.
+3. Open **VAG11 TV** from the TV's apps. It installs beside the stock YouTube app and doesn't replace it.
 
 ## Using it
+
+- **Settings → Ad blocking**: one switch, on by default. It takes out adverts before and during videos,
+  the Home banner and the Sponsored tiles.
+- **Settings → SponsorBlock**: on or off, and for each kind of segment (sponsor, self-promotion,
+  intro, outro and more) *Auto skip*, *Show a skip button* or *Off*. Segments are marked on the
+  progress bar in SponsorBlock's colours.
+- Segments come from the community database at `sponsor.ajay.app`. Only the first four characters of a
+  hash of the video id are sent, so the server cannot tell which video is playing.
+
+## How it is made
+
+`cobalt/build_cobalt.py` takes the [TizenTubeCobalt](https://github.com/reisxd/TizenTubeCobalt) 2.0.2
+APK (BSD-3-Clause), checks it against its published SHA-256, and changes only same-length strings: the
+address of the script it loads, the package name (`com.vag11.tv.cobalt.youtubetv`) and the label. It swaps
+in the VAG11 icon and banner, then aligns and signs the APK. The script, `cobalt/vag11.user.js`, is
+released from [Vagii-Kavagi/VAG11TV-script](https://github.com/Vagii-Kavagi/VAG11TV-script) and each build
+loads one exact version of it. [cobalt/README.md](cobalt/README.md) has the details and what was tested.
+
+Nothing of YouTube's is copied into this repo: the interface is loaded from YouTube each time.
+VAG11TV is not affiliated with YouTube or Google.
+
+## Tested on
+
+Xiaomi MiTV-MSSP2 (32", 1366×768), Android TV 9, MediaTek MT5895.
+
+---
+
+## The older WebView version
+
+The repo's first version, still in `app/`, is a WebView shell (`com.vag11.tv`) around `youtube.com/tv`
+with the same two additions. It is kept for reference; the Cobalt build above plays video much better.
+
+### Using it
 
 - First start: choose **Watch as guest**. The TV remembers that.
 - **Settings → SponsorBlock → Open SponsorBlock** opens the menu. OK changes a row: *Auto skip*,
@@ -28,7 +60,7 @@ system WebView, and is left as it is. The additions are:
   or page you open.
 - With ad blocking off, SponsorBlock skips nothing while an advert plays.
 
-## Build and install
+### Build and install
 
 Needs JDK 17, the Android SDK (platform 34, build-tools 34.0.0) and `adb` authorised on the TV.
 
@@ -41,11 +73,11 @@ Needs JDK 17, the Android SDK (platform 34, build-tools 34.0.0) and `adb` author
 Release builds are signed with the debug key of the PC that builds them, unless a `keystore.properties`
 (never committed) names a release key: `storeFile`, `storePassword`, `keyAlias`, `keyPassword`.
 
-## Tested on
+### Tested on
 
 Xiaomi MiTV-MSSP2, Android TV 9, Android System WebView 138.
 
-## Known limits
+### Known limits
 
 - It depends on how YouTube's TV page is built today (its settings data and its command resolver).
   When YouTube changes those, the Settings entries can disappear until `settings_hook.js` is updated,
