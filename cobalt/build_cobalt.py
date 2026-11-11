@@ -11,6 +11,7 @@ against the published SHA-256, then changed only by same-length replacements, so
     so a script release needs no new APK, and only tagged versions are ever loaded.
   - AndroidManifest.xml: the package name, so it installs as its own app, and
     the label.
+  - the launcher icon and TV banner: VAG11's (cobalt/art), same files and sizes.
 
 The old signature is dropped; the result is aligned and signed with this PC's debug key (the same
 key as the WebView build), using zipalign and apksigner from the Android SDK.
@@ -39,6 +40,22 @@ OLD_LABEL = "TizenTube"
 NEW_LABEL = "VAG11 TV "  # same length; the trailing space does not show
 
 LIB = "lib/armeabi-v7a/libchrobalt.so"
+
+# The launcher artwork (cobalt/art, drawn by make_art.ps1) in place of TizenTube's, file for file
+# at the same pixel sizes, so the resource table needs no change.
+ART = os.path.join(os.path.dirname(os.path.abspath(__file__)), "art")
+ART_FILES = {
+    "res/mipmap-mdpi-v4/ic_app": "ic_app_80.png",
+    "res/mipmap-hdpi-v4/ic_app": "ic_app_120.png",
+    "res/mipmap-xhdpi-v4/ic_app": "ic_app_160.png",
+    "res/mipmap-xxhdpi-v4/ic_app": "ic_app_240.png",
+    "res/mipmap-xxxhdpi-v4/ic_app": "ic_app_320.png",
+    "res/drawable/app_banner": "app_banner_160.png",
+    "res/drawable-hdpi-v4/app_banner": "app_banner_240.png",
+    "res/drawable-xhdpi-v4/app_banner": "app_banner_320.png",
+    "res/drawable-xxhdpi-v4/app_banner": "app_banner_480.png",
+    "res/drawable-xxxhdpi-v4/app_banner": "app_banner_640.png",
+}
 
 
 def same_length(old, new):
@@ -94,7 +111,10 @@ def main(base, out):
             if name.startswith("META-INF/") and name.rsplit(".", 1)[-1] in ("SF", "RSA", "DSA", "EC", "MF"):
                 continue  # the old signature
             data = zin.read(name)
-            if name == LIB:
+            if name in ART_FILES:
+                with open(os.path.join(ART, ART_FILES[name]), "rb") as art:
+                    data = art.read()
+            elif name == LIB:
                 data = patch_url(data)
             elif name == "AndroidManifest.xml":
                 data = patch_utf16(data, OLD_PACKAGE, NEW_PACKAGE, name, package_count)  # package, providers
