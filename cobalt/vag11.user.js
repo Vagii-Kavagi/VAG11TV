@@ -9,7 +9,7 @@
 // lookup, which carries only the first 4 characters of the SHA-256 of the video id.
 (function () {
     if (window.top !== window || window.__vag11) return;
-    window.__vag11 = { version: '1.0.3' };
+    window.__vag11 = { version: '1.0.4' };
 
     // ---- choices -------------------------------------------------------------------------------
 
@@ -477,6 +477,22 @@
         outro: '#0202ed', preview: '#008fd6', music_offtopic: '#ff9900', filler: '#7300ff'
     };
     var marks = null;
+    // YouTube redraws the bar as playback moves and drops what it did not put there, the marks too.
+    // Waiting for the next tick to put them back made them blink; an observer puts them back before
+    // the screen is painted.
+    var marksTrack = null, marksObserver = null, marksRestored = 0, marksLogAt = 0;
+    function watchTrack(track) {
+        if (marksObserver) marksObserver.disconnect();
+        marksTrack = track;
+        if (!window.MutationObserver) return;
+        marksObserver = new MutationObserver(function () {
+            if (marks && !marks.isConnected && marksTrack && marksTrack.isConnected) {
+                marksTrack.appendChild(marks);
+                marksRestored++;
+            }
+        });
+        marksObserver.observe(track, { childList: true });
+    }
 
     function findTrack(bar) {
         var br = bar.getBoundingClientRect(), best = null, bestW = 0;
@@ -498,10 +514,20 @@
         var key = list.length ? curVid + '|' + Math.round(v.duration) + '|' + list.map(function (s) {
             return s.cat + s.start.toFixed(1);
         }).join(',') : '';
+        var now = Date.now();
+        if (marksRestored && now - marksLogAt > 5000) {
+            log('marks put back ' + marksRestored + ' times after the bar was redrawn');
+            marksRestored = 0;
+            marksLogAt = now;
+        }
         if (marks && marks.isConnected && marks.getAttribute('data-key') === key) return;
         if (marks && marks.parentNode) marks.parentNode.removeChild(marks);
         marks = null;
-        if (!key) return;
+        if (!key) {
+            if (marksObserver) { marksObserver.disconnect(); marksObserver = null; }
+            marksTrack = null;
+            return;
+        }
         var bar = document.querySelector('ytlr-progress-bar');
         var track = bar && findTrack(bar);
         if (!track) return;
@@ -516,6 +542,7 @@
             ].join(';')));
         });
         track.appendChild(marks);
+        watchTrack(track);
     }
 
     function tick() {

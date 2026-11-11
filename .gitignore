@@ -11,3 +11,4 @@ keystore.properties
 # Downloaded Cobalt base APK (never committed)
 base/
 out/
+saved/
