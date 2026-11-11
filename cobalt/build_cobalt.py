@@ -1,6 +1,6 @@
 """Builds VAG11TV for Cobalt from the TizenTubeCobalt base APK.
 
-    python -I cobalt/build_cobalt.py base/cobalt-arm-v2.0.3.apk out/VAG11TV-cobalt.apk
+    python -I cobalt/build_cobalt.py base/cobalt-arm-v2.0.2.apk out/VAG11TV-cobalt.apk
 
 The base is TizenTubeCobalt (github.com/reisxd/TizenTubeCobalt, BSD-3-Clause): YouTube's open-source
 TV engine, Cobalt, built with a hook that loads one script into youtube.com/tv. The base is checked
@@ -22,7 +22,13 @@ import sys
 import tempfile
 import zipfile
 
-BASE_SHA256 = "72a3527f520db3a1b414916ad96481244e451c41e272ae33344ae5e79abb37dd"  # v2.0.3 cobalt-arm.apk
+# Bases checked against their published SHA-256, with how often the package name is in the manifest.
+# 2.0.3 often fails to load its script ("JSDelivr is not reachable"), also unmodified, on a
+# MiTV-MSSP2 (reisxd/TizenTubeCobalt#368 reports the same, gone on 2.0.2), so 2.0.2 is the one used.
+BASES = {
+    "ff90c6e85c37246b809cca80282910509782c1384eccfbb6066da3b497dd9fd2": ("2.0.2", 3),
+    "72a3527f520db3a1b414916ad96481244e451c41e272ae33344ae5e79abb37dd": ("2.0.3", 2),
+}
 
 OLD_URL = b"https://cdn.jsdelivr.net/npm/@foxreis/tizentube/dist/userScript.js?v="
 NEW_URL = b"https://cdn.jsdelivr.net/gh/Vagii-Kavagi/VAG11TV-script@1/v.js?v="
@@ -73,8 +79,10 @@ def sdk_tool(name):
 def main(base, out):
     with open(base, "rb") as f:
         digest = hashlib.sha256(f.read()).hexdigest()
-    if digest != BASE_SHA256:
-        raise SystemExit("base APK SHA-256 %s does not match the published %s" % (digest, BASE_SHA256))
+    if digest not in BASES:
+        raise SystemExit("base APK SHA-256 %s is not one of the published, checked bases" % digest)
+    version, package_count = BASES[digest]
+    print("base: TizenTubeCobalt %s" % version)
 
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     tmp = tempfile.mkdtemp()
@@ -89,7 +97,7 @@ def main(base, out):
             if name == LIB:
                 data = patch_url(data)
             elif name == "AndroidManifest.xml":
-                data = patch_utf16(data, OLD_PACKAGE, NEW_PACKAGE, name, 2)  # package, file provider
+                data = patch_utf16(data, OLD_PACKAGE, NEW_PACKAGE, name, package_count)  # package, providers
                 data = patch_utf16(data, OLD_LABEL, NEW_LABEL, name, 1)
             # resources.arsc keeps the base's package name, as Android's own renaming does
             # (aapt --rename-manifest-package): renamed there too, the engine fails to load the

@@ -9,7 +9,7 @@
 // lookup, which carries only the first 4 characters of the SHA-256 of the video id.
 (function () {
     if (window.top !== window || window.__vag11) return;
-    window.__vag11 = { version: '1.0.1' };
+    window.__vag11 = { version: '1.0.2' };
 
     // ---- choices -------------------------------------------------------------------------------
 
@@ -440,7 +440,17 @@
         log('skipping ' + s.cat + ' ' + s.start.toFixed(1) + ' -> ' + s.end.toFixed(1));
         doneUuid[s.uuid] = true;
         askSeg = null;
-        try { v.currentTime = Math.min(s.end, v.duration - 0.5); } catch (e) { }
+        var to = Math.min(s.end, v.duration - 0.5);
+        // Through YouTube's player, which keeps its own idea of the position: set on the element
+        // alone, a jump can be undone by the player.
+        var p = document.querySelector('.html5-video-player');
+        try {
+            if (p && typeof p.seekTo === 'function') p.seekTo(to, true);
+            else v.currentTime = to;
+        } catch (e) {
+            try { v.currentTime = to; } catch (e2) { }
+        }
+        setTimeout(function () { log('after skip: at ' + v.currentTime.toFixed(1)); }, 1000);
         show('Skipped ' + (SHORT_NAMES[s.cat] || s.cat), 2500);
     }
 

@@ -15,8 +15,13 @@ The base APK goes in `base/` and the result in `out/`; neither is committed.
 
 ## Status
 
-- Works on a MiTV-MSSP2: the script loads, "Ad blocking" and "SponsorBlock" appear in YouTube's
-  Settings, and both menus work with the remote.
-- TizenTubeCobalt 2.0.3, the base used so far, often fails to load its script on this TV ("JSDelivr
-  is not reachable"), also unmodified; reisxd/TizenTubeCobalt#368 reports the same, gone on 2.0.2.
-- SponsorBlock skipping is not confirmed on the TV yet.
+Built on TizenTubeCobalt **2.0.2** (`base/cobalt-arm-v2.0.2.apk`, 97.2 MB, from its GitHub release).
+2.0.3 often fails to load its script on the tested TV, also unmodified ("JSDelivr is not reachable");
+reisxd/TizenTubeCobalt#368 reports the same, gone on 2.0.2. `build_cobalt.py` accepts either base.
+
+Tried on a MiTV-MSSP2 (Android 9):
+- 6 of 6 launches load the script, with no dialog; it installs as "VAG11 TV" (`com.vag11.tv.cobalt.youtubetv`).
+- "Ad blocking" and "SponsorBlock" appear in YouTube's Settings; both menus work with the remote.
+- SponsorBlock skips: a sponsor segment at 51.3 to 67.9 s was skipped and playback went on at 68.6 s.
+  The skip goes through YouTube's player (`seekTo`); set on the video element alone it did not stick.
+- The script logs to the system log as warnings: `adb logcat -s cobalt:* | grep VAG11`.
