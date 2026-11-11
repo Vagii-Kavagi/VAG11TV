@@ -24,4 +24,6 @@ Tried on a MiTV-MSSP2 (Android 9):
 - "Ad blocking" and "SponsorBlock" appear in YouTube's Settings; both menus work with the remote.
 - SponsorBlock skips: a sponsor segment at 51.3 to 67.9 s was skipped and playback went on at 68.6 s.
   The skip goes through YouTube's player (`seekTo`); set on the video element alone it did not stick.
+- SponsorBlock segments are marked on YouTube's progress bar (script 1.0.3), one mark per segment
+  whose category is not Off, in SponsorBlock's colours.
 - The script logs to the system log as warnings: `adb logcat -s cobalt:* | grep VAG11`.
