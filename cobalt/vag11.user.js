@@ -9,12 +9,12 @@
 // lookup, which carries only the first 4 characters of the SHA-256 of the video id.
 (function () {
     if (window.top !== window || window.__vag11) return;
-    window.__vag11 = { version: '1.1.4' };
+    window.__vag11 = { version: '1.1.6' };
 
     // ---- choices -------------------------------------------------------------------------------
 
     var AUTO = 0, ASK = 1, OFF = 2;
-    var MODE_NAMES = ['Auto skip', 'Show a skip button', 'Off'];
+    var MODE_NAMES = ['Auto skip', 'Skip button', 'Off'];
     var CATS = ['sponsor', 'selfpromo', 'interaction', 'intro', 'outro', 'preview', 'music_offtopic', 'filler'];
     var CAT_NAMES = {
         sponsor: 'Sponsor', selfpromo: 'Unpaid / self promotion', interaction: 'Interaction reminder (subscribe)',
@@ -278,32 +278,37 @@
     // Drawn over the page and driven by the remote: Up and Down move, OK or Left and Right change
     // the value, Back closes. While a menu is open no key reaches YouTube.
 
-    var menu = null;  // { page, rows, index, el }
+    var menu = null;  // { page, rows, index, el, armed }
 
+    // Rows: 'toggle' (an on/off switch), 'cat' (a SponsorBlock category with its mode), and rows
+    // that cannot be focused: 'section' (a small heading), 'stats' and 'note'.
     function menuRows(page) {
         if (page === 'ads') {
-            return [{
-                label: 'Block ads', value: function () { return cfg.adblock ? 'On' : 'Off'; },
-                change: function () { cfg.adblock = !cfg.adblock; }
-            }, {
-                note: 'Applies to what loads next. Blocked so far: ' + adStats.videos + ' videos, '
-                    + adStats.feedAds + ' feed adverts, ' + adStats.shorts + ' Shorts.'
-            }];
+            return [
+                { kind: 'toggle', label: 'Block ads', sub: 'Adverts in videos, the Home banner, Sponsored tiles and Shorts',
+                    on: function () { return cfg.adblock; }, change: function () { cfg.adblock = !cfg.adblock; } },
+                { kind: 'section', label: 'Blocked since the app started' },
+                { kind: 'stats' },
+                { kind: 'note', label: 'A change applies to what loads next.' }
+            ];
         }
-        var rows = [{
-            label: 'SponsorBlock', value: function () { return cfg.sb ? 'On' : 'Off'; },
-            change: function () { cfg.sb = !cfg.sb; }
-        }];
+        var rows = [
+            { kind: 'toggle', label: 'Skip segments', sub: 'Community-reported sponsors and other segments',
+                on: function () { return cfg.sb; }, change: function () { cfg.sb = !cfg.sb; } },
+            { kind: 'section', label: 'Categories' }
+        ];
         CATS.forEach(function (c) {
             rows.push({
-                label: CAT_NAMES[c], value: function () { return MODE_NAMES[cfg.cats[c]]; },
+                kind: 'cat', cat: c, label: CAT_NAMES[c], value: function () { return MODE_NAMES[cfg.cats[c]]; },
                 change: function (dir) { cfg.cats[c] = (cfg.cats[c] + (dir < 0 ? 2 : 1)) % 3; },
                 dim: function () { return !cfg.sb; }
             });
         });
-        rows.push({ note: 'Segments come from sponsor.ajay.app. Only the first 4 characters of a hash of the video id are sent.' });
+        rows.push({ kind: 'note', label: 'From sponsor.ajay.app. Only 4 characters of a hash of the video id leave the TV.' });
         return rows;
     }
+
+    function focusable(r) { return r.kind === 'toggle' || r.kind === 'cat'; }
 
     function el(tag, css, text) {
         var e = document.createElement(tag);
@@ -312,44 +317,112 @@
         return e;
     }
 
+    var FONT = 'Roboto,Arial,sans-serif';
+
+    // The VAG11 mark: a red disc with a white skip-ahead sign.
+    function markSvg(size) {
+        var ns = 'http://www.w3.org/2000/svg', svg = document.createElementNS(ns, 'svg');
+        svg.setAttribute('viewBox', '0 0 40 40');
+        svg.style.cssText = 'width:' + size + ';height:' + size + ';flex:none';
+        var c = document.createElementNS(ns, 'circle');
+        c.setAttribute('cx', '20'); c.setAttribute('cy', '20'); c.setAttribute('r', '20'); c.setAttribute('fill', '#FF0033');
+        var p = document.createElementNS(ns, 'path');
+        p.setAttribute('d', 'M11 12 L20 20 L11 28 Z M20 12 L29 20 L20 28 Z'); p.setAttribute('fill', '#fff');
+        svg.appendChild(c); svg.appendChild(p);
+        return svg;
+    }
+
+    function toggleSwitch(on, focused) {
+        var track = el('div', [
+            'position:relative', 'flex:none', 'width:4.6vh', 'height:2.6vh', 'border-radius:1.3vh',
+            'background:' + (on ? '#FF0033' : (focused ? '#909090' : '#5c5c5c')), 'transition:background .15s'
+        ].join(';'));
+        track.appendChild(el('div', [
+            'position:absolute', 'top:0.3vh', 'left:' + (on ? '2.3vh' : '0.3vh'), 'width:2vh', 'height:2vh',
+            'border-radius:50%', 'background:#fff', 'transition:left .15s'
+        ].join(';')));
+        return track;
+    }
+
     function drawMenu() {
         var m = menu;
         m.el.textContent = '';
-        m.el.appendChild(el('div', 'font:500 3.6vh Roboto,Arial,sans-serif;margin:0 0 2.4vh 0;color:#fff',
-            m.page === 'ads' ? 'Ad blocking' : 'SponsorBlock'));
+
+        var head = el('div', 'display:flex;align-items:center;gap:1.2vw;margin:0 0 3vh 0');
+        head.appendChild(markSvg('5.2vh'));
+        var titles = el('div', '');
+        titles.appendChild(el('div', 'font:500 3.4vh ' + FONT + ';color:#fff;line-height:1.2', m.page === 'ads' ? 'Ad blocking' : 'SponsorBlock'));
+        titles.appendChild(el('div', 'font:400 1.9vh ' + FONT + ';color:#aaa;margin-top:0.3vh', 'VAG11 TV'));
+        head.appendChild(titles);
+        m.el.appendChild(head);
+
         m.rows.forEach(function (r, i) {
-            if (r.note) {
-                m.el.appendChild(el('div', 'font:400 2.1vh Roboto,Arial,sans-serif;color:#aaa;margin:2vh 0.6vw 0 0.6vw;line-height:1.4', r.note));
+            var focused = i === m.index;
+            if (r.kind === 'section') {
+                m.el.appendChild(el('div', 'font:500 1.8vh ' + FONT + ';color:#aaa;letter-spacing:0.08em;text-transform:uppercase;margin:2.6vh 1vw 1vh 1vw', r.label));
                 return;
             }
-            var focused = i === m.index, dim = r.dim && r.dim();
+            if (r.kind === 'note') {
+                m.el.appendChild(el('div', 'font:400 1.8vh ' + FONT + ';color:#8a8a8a;margin:2.2vh 1vw 0 1vw;line-height:1.45', r.label));
+                return;
+            }
+            if (r.kind === 'stats') {
+                var grid = el('div', 'display:flex;gap:0.8vw;margin:0 0.4vw');
+                [[adStats.videos, 'videos'], [adStats.feedAds, 'feed adverts'], [adStats.shorts, 'Shorts']].forEach(function (st) {
+                    var card = el('div', 'flex:1;background:#2c2c2c;border-radius:1.4vh;padding:1.6vh 1vw');
+                    card.appendChild(el('div', 'font:500 3.2vh ' + FONT + ';color:#fff', String(st[0])));
+                    card.appendChild(el('div', 'font:400 1.7vh ' + FONT + ';color:#aaa;margin-top:0.2vh', st[1]));
+                    grid.appendChild(card);
+                });
+                m.el.appendChild(grid);
+                return;
+            }
+            var dim = r.dim && r.dim();
             var row = el('div', [
-                'display:flex', 'justify-content:space-between', 'align-items:center',
-                'padding:1.5vh 1.4vw', 'margin:0.5vh 0', 'border-radius:1vh',
-                'font:400 2.6vh Roboto,Arial,sans-serif',
-                'background:' + (focused ? '#f1f1f1' : 'transparent'),
-                'color:' + (focused ? '#0f0f0f' : (dim ? '#777' : '#fff'))
+                'display:flex', 'align-items:center', 'gap:1vw', 'box-sizing:border-box',
+                'padding:' + (r.kind === 'toggle' ? '1.6vh 1.4vw' : '1.15vh 1.4vw'), 'margin:0.35vh 0',
+                'border-radius:999px', 'font:400 2.4vh ' + FONT,
+                'background:' + (focused ? '#f1f1f1' : (r.kind === 'toggle' ? '#2c2c2c' : 'transparent')),
+                'color:' + (focused ? '#0f0f0f' : '#fff'), 'opacity:' + (dim && !focused ? '0.45' : '1'),
+                'transition:background .12s'
             ].join(';'));
-            row.appendChild(el('span', '', r.label));
-            row.appendChild(el('span', 'font-weight:500;margin-left:3vw', r.value()));
+            if (r.kind === 'cat') {
+                row.appendChild(el('div', 'flex:none;width:1.4vh;height:1.4vh;border-radius:50%;background:' + (SEG_COLORS[r.cat] || '#fff')));
+            }
+            var text = el('div', 'flex:1;min-width:0');
+            text.appendChild(el('div', r.kind === 'toggle' ? 'font-weight:500' : '', r.label));
+            if (r.sub) text.appendChild(el('div', 'font-size:1.8vh;margin-top:0.3vh;color:' + (focused ? '#3f3f3f' : '#aaa'), r.sub));
+            row.appendChild(text);
+            if (r.kind === 'toggle') {
+                row.appendChild(toggleSwitch(r.on(), focused));
+            } else {
+                var v = r.value();
+                row.appendChild(el('div', 'flex:none;font-weight:500;font-size:2.1vh;color:' + (focused ? '#0f0f0f' : (v === 'Off' ? '#8a8a8a' : '#fff')),
+                    focused ? '‹  ' + v + '  ›' : v));
+            }
             m.el.appendChild(row);
         });
-        m.el.appendChild(el('div', 'font:400 1.9vh Roboto,Arial,sans-serif;color:#888;margin-top:2.4vh',
-            'OK or Left/Right: change   •   Back: close'));
+
+        m.el.appendChild(el('div', 'position:absolute;left:2.6vw;right:2.6vw;bottom:3.6vh;font:400 1.8vh ' + FONT + ';color:#8a8a8a',
+            'OK or ‹ ›  change  ·  Back  close'));
     }
 
     function openMenu(page) {
         closeMenu();
         var panel = el('div', [
-            'position:fixed', 'top:0', 'right:0', 'bottom:0', 'width:46vw', 'z-index:2147483647',
-            'box-sizing:border-box', 'padding:6vh 3vw', 'overflow:hidden',
-            'background:rgba(24,24,24,0.98)', 'box-shadow:-1vw 0 3vw rgba(0,0,0,0.6)'
+            'position:fixed', 'top:0', 'right:0', 'bottom:0', 'width:40vw', 'z-index:2147483647',
+            'box-sizing:border-box', 'padding:5vh 2.6vw 8vh 2.6vw', 'overflow:hidden',
+            'background:#212121', 'box-shadow:-1vw 0 4vw rgba(0,0,0,0.55)',
+            'transform:translateX(100%)', 'transition:transform .2s ease-out'
         ].join(';'));
         // armed after the press that opened the menu is released, so that press cannot change a row
-        menu = { page: page, rows: menuRows(page), index: 0, el: panel, armed: false };
+        var rows = menuRows(page), first = 0;
+        while (first < rows.length && !focusable(rows[first])) first++;
+        menu = { page: page, rows: rows, index: first, el: panel, armed: false };
         setTimeout(function () { if (menu) menu.armed = true; }, 600);
         (document.body || document.documentElement).appendChild(panel);
         drawMenu();
+        requestAnimationFrame(function () { requestAnimationFrame(function () { panel.style.transform = 'translateX(0)'; }); });
     }
 
     function closeMenu() {
@@ -361,7 +434,7 @@
         var rows = menu.rows, i = menu.index;
         for (var n = 0; n < rows.length; n++) {
             i = (i + dir + rows.length) % rows.length;
-            if (!rows[i].note) { menu.index = i; return; }
+            if (focusable(rows[i])) { menu.index = i; return; }
         }
     }
 

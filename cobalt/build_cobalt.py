@@ -36,7 +36,7 @@ OLD_URL = b"https://cdn.jsdelivr.net/npm/@foxreis/tizentube/dist/userScript.js?v
 # (measured 2026-11-11), which left the TV on an older script. A release is a tag in
 # Vagii-Kavagi/VAG11TV-script and a rebuild here. Five characters at most, or the address no longer
 # fits in the engine's 69 bytes.
-SCRIPT_VERSION = "1.1.4"
+SCRIPT_VERSION = "1.1.6"
 NEW_URL = ("https://cdn.jsdelivr.net/gh/Vagii-Kavagi/VAG11TV-script@%s/v.js?v=" % SCRIPT_VERSION).encode()
 
 OLD_PACKAGE = "io.gh.reisxd.tizentube.cobalt"
