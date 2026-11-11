@@ -142,6 +142,14 @@ public class WebShellActivity extends Activity {
             }
 
             @Override
+            public void onFirstPicture(int session, int seek) {
+                if (web != null) {
+                    web.evaluateJavascript("window.__vag11nv&&window.__vag11nv.shown(" + session + ","
+                            + seek + ");", null);
+                }
+            }
+
+            @Override
             public void onStats(long rendered, long dropped) {
                 if (web != null) {
                     web.evaluateJavascript("window.__vag11nv&&window.__vag11nv.stats(" + rendered + ","

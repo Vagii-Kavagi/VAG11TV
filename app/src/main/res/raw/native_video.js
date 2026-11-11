@@ -123,6 +123,14 @@
         Object.defineProperty(this, 'buffered', {
             get: function () {
                 var r = self.ranges.slice();
+                // Until the app's decoder has the first picture up (after a start or a seek), nothing
+                // ahead of the playhead counts as buffered, so the player waits for it instead of
+                // starting the sound while the decoder is still warming up.
+                if (!nv.ready && nv.current === self) {
+                    var v = document.querySelector('video'), at = v ? v.currentTime : 0;
+                    r = r.map(function (x) { return [x[0], Math.min(x[1], at)]; })
+                        .filter(function (x) { return x[1] > x[0]; });
+                }
                 return { length: r.length, start: function (i) { return r[i][0]; }, end: function (i) { return r[i][1]; } };
             }
         });
@@ -391,8 +399,27 @@
         root.classList.toggle(SEE_THROUGH, on);
     }
 
+    // Holding playback for the decoder: set on a start or a seek, cleared when the app reports the
+    // first picture for the latest of them (nv.shown), and after 5 s in any case so playback can
+    // never stick on it. Decoding from a keyframe up to a seek target can take seconds at 60 fps.
+    var holdTimer = 0, seekSeq = 0;
+    nv.ready = true;
+    function release() {
+        nv.ready = true;
+        clearTimeout(holdTimer);
+    }
+    function hold() {
+        nv.ready = false;
+        clearTimeout(holdTimer);
+        holdTimer = setTimeout(release, 5000);
+    }
+    nv.shown = function (id, seq) {
+        if (nv.current && nv.current.id === id && seq === seekSeq) release();
+    };
+
     function close(fake) {
         fake.closed = true;
+        release();
         if (nv.current !== fake) return;
         nv.current = null;
         seeThrough(false);
@@ -409,6 +436,8 @@
         nv.current = fake;
         seeThrough(true);
         post({ t: 'open', id: fake.id });
+        seekSeq = 0;
+        hold();
         this.addEventListener('sourceclose', function () { close(fake); });
         startClock();
         lastAsk = 0;
@@ -432,6 +461,13 @@
             ['play', 'pause', 'playing', 'waiting', 'seeking', 'seeked', 'ratechange', 'ended'].forEach(function (n) {
                 v.addEventListener(n, tick);
             });
+            // A seek: the decoder starts again from a keyframe, and playback waits for it. The new
+            // position travels with it: the next clock report may come after.
+            v.addEventListener('seeking', function () {
+                if (!nv.current) return;
+                hold();
+                post({ t: 'seek', id: nv.current.id, pos: v.currentTime, seq: ++seekSeq });
+            }, true);
         }
         var r = v.getBoundingClientRect();
         post({

@@ -12,6 +12,7 @@ import org.json.JSONObject;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
+import java.util.Arrays;
 import java.util.Iterator;
 import java.util.Map;
 import java.util.TreeMap;
@@ -35,6 +36,9 @@ final class NativeVideo implements SurfaceHolder.Callback, Runnable {
         void onShowing(boolean showing);
 
         void onStats(long rendered, long dropped);
+
+        /** The picture for the start (seek 0) or a seek is up: the page may let playback go on. */
+        void onFirstPicture(int session, int seek);
 
         /** Where the page wants the picture, in page pixels. */
         void onRect(double x, double y, double w, double h, double pageW, double pageH);
@@ -69,6 +73,14 @@ final class NativeVideo implements SurfaceHolder.Callback, Runnable {
     private boolean active;
     private boolean needSeek;
     private int session = -1;
+    private int seekSeq;
+    /** Decode time of the next frame the decoder will get. */
+    private long fedUpTo = Long.MIN_VALUE;
+    /**
+     * Earliest decode time of new frames that arrived for a stretch the decoder had already been
+     * given (a quality switch, or data fetched again after a seek). Feeding goes back to there.
+     */
+    private long rewindTo = Long.MAX_VALUE;
     private int width;
     private int height;
     private boolean haveClock;
@@ -138,6 +150,8 @@ final class NativeVideo implements SurfaceHolder.Callback, Runnable {
             synchronized (lock) {
                 if ("open".equals(t)) {
                     session = id;
+                    seekSeq = 0;
+                    rewindTo = Long.MAX_VALUE;
                     store.clear();
                     csd0 = csd1 = null;
                     active = true;
@@ -150,6 +164,16 @@ final class NativeVideo implements SurfaceHolder.Callback, Runnable {
                 } else if ("stop".equals(t)) {
                     active = false;
                     store.clear();
+                    lock.notifyAll();
+                } else if ("seek".equals(t)) {
+                    // Also a small seek, which the clock alone would not count as one. The position
+                    // comes with it, as the next clock report may come after.
+                    seekSeq = m.optInt("seq");
+                    clockPosUs = m.optDouble("pos", 0) * 1e6;
+                    clockWallMs = System.currentTimeMillis();
+                    running = false;
+                    haveClock = true;
+                    needSeek = true;
                     lock.notifyAll();
                 } else if ("remove".equals(t)) {
                     long a = (long) (m.optDouble("a", 0) * 1e6), b = (long) (m.optDouble("b", 0) * 1e6);
@@ -196,9 +220,13 @@ final class NativeVideo implements SurfaceHolder.Callback, Runnable {
 
     private long nowUs() {
         synchronized (lock) {
-            if (!running) return (long) clockPosUs;
-            return (long) (clockPosUs + (System.currentTimeMillis() - clockWallMs) * 1000.0 * rate);
+            return nowUsLocked();
         }
+    }
+
+    private long nowUsLocked() {
+        if (!running) return (long) clockPosUs;
+        return (long) (clockPosUs + (System.currentTimeMillis() - clockWallMs) * 1000.0 * rate);
     }
 
     /**
@@ -254,12 +282,31 @@ final class NativeVideo implements SurfaceHolder.Callback, Runnable {
      */
     private void insert(long dts, long frameUs, Frame f) {
         Map<Long, Frame> over = store.subMap(dts - 2000, dts + frameUs - 2000);
+        // The same frame again (the player fetches data again after a seek): nothing changes.
+        if (over.size() == 1) {
+            Frame old = over.values().iterator().next();
+            if (old.key == f.key && old.ptsUs == f.ptsUs && Arrays.equals(old.data, f.data)) return;
+        }
+        // Different data starting at a keyframe the decoder is already past (a change of quality):
+        // the frames after it only make sense after that keyframe, so feeding goes back to it, once.
+        // Frames already on screen are left alone.
+        if (f.key && dts < fedUpTo && f.ptsUs > nowUsLocked() - 100_000) rewindTo = Math.min(rewindTo, dts);
         if (!over.isEmpty()) {
             over.clear();
             Iterator<Map.Entry<Long, Frame>> it = store.tailMap(dts, false).entrySet().iterator();
             while (it.hasNext() && !it.next().getValue().key) it.remove();
         }
         store.put(dts, f);
+    }
+
+    /** The first keyframe shown at or after {@code t}, within 10 s; null if there is none yet. */
+    private Long keyframeAfter(long t) {
+        for (Map.Entry<Long, Frame> e : store.tailMap(t - 200_000, true).entrySet()) {
+            Frame f = e.getValue();
+            if (f.ptsUs - t > 10_000_000) break;
+            if (f.key && f.ptsUs >= t) return e.getKey();
+        }
+        return null;
     }
 
     /** The keyframe to start decoding from to show {@code target}; null while it has not arrived. */
@@ -289,17 +336,20 @@ final class NativeVideo implements SurfaceHolder.Callback, Runnable {
         long feedPos = 0;       // time of the next frame to hand to the decoder
         long dropBefore = 0;    // frames before the seek target are decoded but not shown
         boolean shownSinceSeek = false;
+        int shownSeq = 0;       // which seek the picture being prepared is for
+        int lateInARow = 0;
         boolean showing = false;
         long lastStats = 0;
 
         while (true) {
             Surface s;
             boolean act, seek, run;
-            int w, h;
+            int w, h, sess;
             byte[] c0, c1;
             synchronized (lock) {
                 if (quit) break;
                 s = surface;
+                sess = session;
                 act = active && haveClock && width > 0 && csd0 != null;
                 c0 = csd0;
                 c1 = csd1;
@@ -342,6 +392,7 @@ final class NativeVideo implements SurfaceHolder.Callback, Runnable {
                     long target = nowUs();
                     Long key;
                     synchronized (lock) {
+                        shownSeq = seekSeq;
                         key = keyframeFor(target);
                         if (key == null) {
                             needSeek = true;
@@ -352,6 +403,10 @@ final class NativeVideo implements SurfaceHolder.Callback, Runnable {
                     held = -1;
                     codec.flush();
                     feedPos = key;
+                    synchronized (lock) {
+                        fedUpTo = feedPos;
+                        rewindTo = Long.MAX_VALUE;
+                    }
                     dropBefore = target;
                     shownSinceSeek = false;
                 }
@@ -359,6 +414,12 @@ final class NativeVideo implements SurfaceHolder.Callback, Runnable {
                 boolean fed = false;
                 Map.Entry<Long, Frame> next;
                 synchronized (lock) {
+                    if (rewindTo < feedPos) {
+                        // Back to the keyframe the new data starts from.
+                        Frame k = store.get(rewindTo);
+                        if (k != null && k.key) feedPos = rewindTo;
+                    }
+                    rewindTo = Long.MAX_VALUE;
                     next = store.ceilingEntry(feedPos);
                 }
                 if (next != null) {
@@ -376,6 +437,9 @@ final class NativeVideo implements SurfaceHolder.Callback, Runnable {
                                 f.key ? MediaCodec.BUFFER_FLAG_KEY_FRAME : 0);
                         feedPos = next.getKey() + 1;
                         fed = true;
+                        synchronized (lock) {
+                            fedUpTo = feedPos;
+                        }
                     }
                 }
 
@@ -397,6 +461,8 @@ final class NativeVideo implements SurfaceHolder.Callback, Runnable {
                         held = -1;
                         shownSinceSeek = true;
                         rendered++;
+                        final int seq = shownSeq;
+                        ui.post(() -> listener.onFirstPicture(sess, seq));
                         if (!showing) {
                             showing = true;
                             ui.post(() -> listener.onShowing(true));
@@ -407,12 +473,33 @@ final class NativeVideo implements SurfaceHolder.Callback, Runnable {
                         codec.releaseOutputBuffer(held, false);
                         held = -1;
                         dropped++;
+                        // Behind. A late frame still costs a decode, so at 1080p60 the decoder
+                        // never catches up by dropping: go on from the next keyframe that is safely
+                        // ahead instead, a short pause rather than a long run of late frames.
+                        if (++lateInARow >= 6) {
+                            Long k;
+                            synchronized (lock) {
+                                k = keyframeAfter(nowUsLocked() + 250_000);
+                            }
+                            if (k != null) {
+                                codec.flush();
+                                feedPos = k;
+                                dropBefore = 0;
+                                synchronized (lock) {
+                                    fedUpTo = feedPos;
+                                    rewindTo = Long.MAX_VALUE;
+                                }
+                                Log.i(TAG, "video behind: on from the keyframe at " + k / 1000 + " ms");
+                            }
+                            lateInARow = 0;
+                        }
                     } else if (diff > 20_000) {
                         Thread.sleep(Math.min(10, (diff - 15_000) / 1000 + 1));
                     } else {
                         codec.releaseOutputBuffer(held, System.nanoTime() + Math.max(0, diff) * 1000);
                         held = -1;
                         rendered++;
+                        lateInARow = 0;
                     }
                 }
 
