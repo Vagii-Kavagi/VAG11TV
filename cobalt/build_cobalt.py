@@ -16,6 +16,9 @@ against the published SHA-256, then changed only by same-length replacements, so
   - AndroidManifest.xml: the package name, so it installs as its own app, and
     the label.
   - the launcher icon and TV banner: VAG11's (cobalt/art), same files and sizes.
+  - the updater (cobalt/updater): compiled here into one more classesN.dex, and the manifest's
+    androidx FileProvider entry renamed to its same-length subclass, which registers the platform
+    service com.vag11.tv.updater with the engine for the script's Updates menu.
 
 The old signature is dropped; the result is aligned and signed with zipalign and apksigner from the
 Android SDK. With VAG11_KEYSTORE set (and VAG11_KEYSTORE_PASS), it is signed with VAG11's own key and
@@ -44,7 +47,7 @@ OLD_URL = b"https://cdn.jsdelivr.net/npm/@foxreis/tizentube/dist/userScript.js?v
 # (measured 2026-11-11), which left the TV on an older script. A release is a tag in
 # Vagii-Kavagi/VAG11TV-script and a rebuild here. Five characters at most, or the address no longer
 # fits in the engine's 69 bytes.
-SCRIPT_VERSION = "1.1.6"
+SCRIPT_VERSION = "1.2.1"
 NEW_URL = ("https://cdn.jsdelivr.net/gh/Vagii-Kavagi/VAG11TV-script@%s/v.js?v=" % SCRIPT_VERSION).encode()
 
 OLD_PACKAGE = "io.gh.reisxd.tizentube.cobalt"
@@ -53,6 +56,11 @@ OLD_LABEL = "TizenTube"
 NEW_LABEL = "VAG11 TV "  # same length; the trailing space does not show
 
 LIB = "lib/armeabi-v7a/libchrobalt.so"
+
+# The updater's entry point takes the place of the engine's FileProvider (and still is one): same length.
+OLD_PROVIDER = "androidx.core.content.FileProvider"
+NEW_PROVIDER = "com.vag11.tv.updater.FileProvider1"
+UPDATER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "updater")
 
 # The launcher artwork (cobalt/art, drawn by make_art.ps1) in place of TizenTube's, file for file
 # at the same pixel sizes, so the resource table needs no change.
@@ -95,9 +103,44 @@ def patch_utf16(data, old, new, name, expected):
     return data.replace(o, n)
 
 
+def sdk_root():
+    return os.environ.get("ANDROID_HOME") or os.path.join(os.environ["LOCALAPPDATA"], "Android", "Sdk")
+
+
+def android_jar():
+    platforms = os.path.join(sdk_root(), "platforms")
+    for v in sorted(os.listdir(platforms), key=lambda n: int("".join(c for c in n if c.isdigit()) or 0), reverse=True):
+        jar = os.path.join(platforms, v, "android.jar")
+        if os.path.exists(jar):
+            return jar
+    raise SystemExit("no android.jar in %s" % platforms)
+
+
+def java_files(root):
+    return [os.path.join(d, f) for d, _, fs in os.walk(root) for f in fs if f.endswith(".java")]
+
+
+def build_updater_dex(tmp):
+    """Compiles cobalt/updater against stand-ins for the engine's classes, which stay out of the dex."""
+    jdk_bin = os.path.join(os.environ["JAVA_HOME"], "bin")
+    javac, jar = os.path.join(jdk_bin, "javac"), os.path.join(jdk_bin, "jar")
+    lib = android_jar()
+    stubs, classes, out = (os.path.join(tmp, n) for n in ("stubs", "classes", "dex"))
+    for d in (stubs, classes, out):
+        os.makedirs(d)
+    common = ["-source", "8", "-target", "8", "-bootclasspath", lib, "-encoding", "UTF-8", "-nowarn", "-Xlint:-options"]
+    subprocess.check_call([javac] + common + ["-d", stubs] + java_files(os.path.join(UPDATER, "stubs")))
+    subprocess.check_call([javac] + common + ["-cp", stubs, "-d", classes] + java_files(os.path.join(UPDATER, "src")))
+    stubs_jar, classes_jar = os.path.join(tmp, "stubs.jar"), os.path.join(tmp, "classes.jar")
+    subprocess.check_call([jar, "cf", stubs_jar, "-C", stubs, "."])
+    subprocess.check_call([jar, "cf", classes_jar, "-C", classes, "."])
+    subprocess.check_call([sdk_tool("d8"), "--release", "--min-api", "24", "--lib", lib,
+                           "--classpath", stubs_jar, "--output", out, classes_jar])
+    return os.path.join(out, "classes.dex")
+
+
 def sdk_tool(name):
-    sdk = os.environ.get("ANDROID_HOME") or os.path.join(os.environ["LOCALAPPDATA"], "Android", "Sdk")
-    tools = os.path.join(sdk, "build-tools")
+    tools = os.path.join(sdk_root(), "build-tools")
     version = sorted(os.listdir(tools))[-1]
     for ext in (".exe", ".bat", ""):
         path = os.path.join(tools, version, name + ext)
@@ -126,6 +169,12 @@ def main(base, out, expected_sha256=None, engine=None, script=None):
     tmp = tempfile.mkdtemp()
     unsigned, aligned = os.path.join(tmp, "unsigned.apk"), os.path.join(tmp, "aligned.apk")
 
+    # apksigner and javac run on Java: the JDK next to the SDK, as install-to-tv.ps1 uses, unless one is set.
+    jdk = os.environ.get("JAVA_HOME") or os.path.join(os.environ.get("LOCALAPPDATA", ""), "Android", "jdk17")
+    os.environ["JAVA_HOME"] = jdk
+    os.environ["PATH"] = os.path.join(jdk, "bin") + os.pathsep + os.environ.get("PATH", "")
+    updater_dex = build_updater_dex(tmp)
+
     with zipfile.ZipFile(base) as zin, zipfile.ZipFile(unsigned, "w") as zout:
         for info in zin.infolist():
             name = info.filename
@@ -146,6 +195,7 @@ def main(base, out, expected_sha256=None, engine=None, script=None):
                         raise SystemExit("package name not found in the manifest")
                 data = patch_utf16(data, OLD_PACKAGE, NEW_PACKAGE, name, count)  # package, providers
                 data = patch_utf16(data, OLD_LABEL, NEW_LABEL, name, 1)
+                data = patch_utf16(data, OLD_PROVIDER, NEW_PROVIDER, name, 1)
             # resources.arsc keeps the base's package name, as Android's own renaming does
             # (aapt --rename-manifest-package): renamed there too, the engine fails to load the
             # script (measured on a MiTV-MSSP2: the "JSDelivr is not reachable" dialog).
@@ -153,11 +203,12 @@ def main(base, out, expected_sha256=None, engine=None, script=None):
             copy.compress_type = info.compress_type
             copy.external_attr = info.external_attr
             zout.writestr(copy, data)
-
-    # apksigner runs on Java: the JDK next to the SDK, as install-to-tv.ps1 uses, unless one is set.
-    jdk = os.environ.get("JAVA_HOME") or os.path.join(os.environ.get("LOCALAPPDATA", ""), "Android", "jdk17")
-    os.environ["JAVA_HOME"] = jdk
-    os.environ["PATH"] = os.path.join(jdk, "bin") + os.pathsep + os.environ.get("PATH", "")
+        # The updater as the next dex in line (Android loads classes.dex, classes2.dex, ... in order).
+        numbers = [int(n[7:-4] or 1) for n in zin.namelist() if n.startswith("classes") and n.endswith(".dex")]
+        dex_name = "classes%d.dex" % (max(numbers) + 1)
+        with open(updater_dex, "rb") as f:
+            zout.writestr(zipfile.ZipInfo(dex_name, (2026, 1, 1, 0, 0, 0)), f.read(), zipfile.ZIP_DEFLATED)
+        print("updater: %s" % dex_name)
 
     subprocess.check_call([sdk_tool("zipalign"), "-f", "-p", "4", unsigned, aligned])
     own = os.environ.get("VAG11_KEYSTORE")

@@ -8,6 +8,10 @@ plays video the way the stock YouTube app does (hardware video plane, instant st
   Released from the public repo [Vagii-Kavagi/VAG11TV-script](https://github.com/Vagii-Kavagi/VAG11TV-script)
   as `v.js`, tagged `1.x.y`. Each build loads one exact tag (`SCRIPT_VERSION` in `build_cobalt.py`):
   jsDelivr's `@1` alias lagged by hours, which left the TV on an older script.
+- `updater/`: the Android part behind Settings → Updates, compiled by the build into one more `classesN.dex`.
+  It registers the Cobalt platform service `com.vag11.tv.updater` (the page cannot see Android objects on
+  `window` in this engine; services are its supported channel), which downloads a release, checks its
+  SHA-256 and installs it with Android's PackageInstaller on internal storage.
 - `build_cobalt.py`: makes the APK from the TizenTubeCobalt base (BSD-3-Clause), checked against
   its published SHA-256, by same-length replacements only (script address, package name, label),
   then aligns and signs it with this PC's debug key.

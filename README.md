@@ -28,6 +28,12 @@ and play on the TV's hardware video decoder, up to 1080p at 60 fps.
 
 ## Updates
 
+- **In the app: Settings → Updates.** It checks the releases here. With nothing newer it says *You're done here*;
+  otherwise it shows the new version with **Download and install**. The download is checked against the SHA-256
+  GitHub publishes, then Android asks you to press **Install**, once per update. It is an update of the same
+  app, so your sign-in and settings stay. The first time, Android asks you to allow VAG11 TV under *Install
+  unknown apps*. *Include untested builds* also offers the automatic engine builds below. Releases before
+  `v1.2.1-engine-2.0.2` don't have the menu, so install that one by hand once.
 - **New engine versions are built automatically.** Once a day, [Engine watch](.github/workflows/engine-watch.yml)
   checks [TizenTubeCobalt](https://github.com/reisxd/TizenTubeCobalt/releases) for a new engine. When one is
   out, it builds VAG11 on it and publishes it here as a **pre-release marked untested**, named

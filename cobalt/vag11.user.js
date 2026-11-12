@@ -5,11 +5,12 @@
 //   1. Ad blocking: the advert parts are taken out of YouTube's data before the page reads it.
 //   2. Two entries in YouTube's Settings, "Ad blocking" and "SponsorBlock", each opening a menu.
 //   3. SponsorBlock: segments the community reported are skipped, or offered with a skip button.
+//   4. Updates: a Settings entry that finds a newer VAG11 TV on GitHub and installs it over this one.
 // Choices are kept on the TV (localStorage). Nothing is sent anywhere except the SponsorBlock
 // lookup, which carries only the first 4 characters of the SHA-256 of the video id.
 (function () {
     if (window.top !== window || window.__vag11) return;
-    window.__vag11 = { version: '1.1.6' };
+    window.__vag11 = { version: '1.2.1' };
 
     // ---- choices -------------------------------------------------------------------------------
 
@@ -30,7 +31,7 @@
     function defaults() {
         var cats = {};
         CATS.forEach(function (c) { cats[c] = c === 'sponsor' ? AUTO : OFF; });
-        return { adblock: true, sb: true, cats: cats };
+        return { adblock: true, sb: true, cats: cats, untested: false };
     }
 
     var cfg = defaults();
@@ -39,6 +40,7 @@
         if (saved && typeof saved === 'object') {
             if (typeof saved.adblock === 'boolean') cfg.adblock = saved.adblock;
             if (typeof saved.sb === 'boolean') cfg.sb = saved.sb;
+            if (typeof saved.untested === 'boolean') cfg.untested = saved.untested;
             CATS.forEach(function (c) {
                 var m = saved.cats && saved.cats[c];
                 if (m === AUTO || m === ASK || m === OFF) cfg.cats[c] = m;
@@ -114,7 +116,7 @@
     // and drawn and focused like its own rows. Choosing one sends a command only this script knows,
     // caught where the page resolves commands.
 
-    var SB_CATEGORY = 'SETTING_CAT_VAG11_SPONSORBLOCK', ADS_CATEGORY = 'SETTING_CAT_VAG11_ADBLOCK';
+    var SB_CATEGORY = 'SETTING_CAT_VAG11_SPONSORBLOCK', ADS_CATEGORY = 'SETTING_CAT_VAG11_ADBLOCK', UPD_CATEGORY = 'SETTING_CAT_VAG11_UPDATES';
 
     function settingsEntry(categoryId, title, summary, label, itemId, endpoint) {
         return {
@@ -149,7 +151,11 @@
                 'Open ad blocking', 'VAG11_ADBLOCK', { vag11OpenAdBlock: {} }),
             settingsEntry(SB_CATEGORY, 'SponsorBlock',
                 'Skip sponsors and other segments reported by the SponsorBlock community. Choose what is skipped for each kind of segment.',
-                'Open SponsorBlock', 'VAG11_SPONSORBLOCK', { vag11OpenSponsorBlock: {} }));
+                'Open SponsorBlock', 'VAG11_SPONSORBLOCK', { vag11OpenSponsorBlock: {} }),
+            settingsEntry(UPD_CATEGORY, 'Updates',
+                upd.phase === 'available' ? 'Update available: VAG11 ' + releaseLabel(upd.release) + '. Open to install it.'
+                    : 'Check for a newer VAG11 TV and install it here. Your sign-in and settings stay.',
+                'Open updates', 'VAG11_UPDATES', { vag11OpenUpdates: {} }));
     }
 
     function patchResolver() {
@@ -164,6 +170,7 @@
                 inst.resolveCommand = function (cmd) {
                     if (cmd && cmd.vag11OpenSponsorBlock) { openMenu('sponsorblock'); return true; }
                     if (cmd && cmd.vag11OpenAdBlock) { openMenu('ads'); return true; }
+                    if (cmd && cmd.vag11OpenUpdates) { openMenu('updates'); if (upd.phase !== 'running' && upd.phase !== 'confirm') checkUpdates(); return true; }
                     return orig.apply(this, arguments);
                 };
                 inst.__vag11 = true;
@@ -283,6 +290,7 @@
     // Rows: 'toggle' (an on/off switch), 'cat' (a SponsorBlock category with its mode), and rows
     // that cannot be focused: 'section' (a small heading), 'stats' and 'note'.
     function menuRows(page) {
+        if (page === 'updates') return updateRows();
         if (page === 'ads') {
             return [
                 { kind: 'toggle', label: 'Block ads', sub: 'Adverts in videos, the Home banner, Sponsored tiles and Shorts',
@@ -308,7 +316,7 @@
         return rows;
     }
 
-    function focusable(r) { return r.kind === 'toggle' || r.kind === 'cat'; }
+    function focusable(r) { return r.kind === 'toggle' || r.kind === 'cat' || r.kind === 'action'; }
 
     function el(tag, css, text) {
         var e = document.createElement(tag);
@@ -334,11 +342,11 @@
 
     function toggleSwitch(on, focused) {
         var track = el('div', [
-            'position:relative', 'flex:none', 'width:4.6vh', 'height:2.6vh', 'border-radius:1.3vh',
+            'position:relative', 'flex:none', 'width:5.75vh', 'height:3.25vh', 'border-radius:1.62vh',
             'background:' + (on ? '#FF0033' : (focused ? '#909090' : '#5c5c5c')), 'transition:background .15s'
         ].join(';'));
         track.appendChild(el('div', [
-            'position:absolute', 'top:0.3vh', 'left:' + (on ? '2.3vh' : '0.3vh'), 'width:2vh', 'height:2vh',
+            'position:absolute', 'top:0.38vh', 'left:' + (on ? '2.88vh' : '0.38vh'), 'width:2.5vh', 'height:2.5vh',
             'border-radius:50%', 'background:#fff', 'transition:left .15s'
         ].join(';')));
         return track;
@@ -347,31 +355,65 @@
     function drawMenu() {
         var m = menu;
         m.el.textContent = '';
+        if (m.page === 'updates') {
+            // The rows follow the update's progress; focus stays on a row that can take it.
+            var keep = m.phase === upd.phase && m.rows[m.index] && m.rows[m.index].label;
+            m.phase = upd.phase;
+            m.rows = updateRows();
+            m.index = -1;
+            m.rows.forEach(function (r, i) { if (m.index < 0 && !keep && r.kind === 'action') m.index = i; });
+            m.rows.forEach(function (r, i) { if (m.index < 0 && focusable(r) && r.label === keep) m.index = i; });
+            if (m.index < 0) m.rows.forEach(function (r, i) { if (m.index < 0 && focusable(r)) m.index = i; });
+        }
 
-        var head = el('div', 'display:flex;align-items:center;gap:1.2vw;margin:0 0 3vh 0');
-        head.appendChild(markSvg('5.2vh'));
+        var head = el('div', 'display:flex;align-items:center;gap:1.2vw;margin:0 0 3.75vh 0');
+        head.appendChild(markSvg('6.5vh'));
         var titles = el('div', '');
-        titles.appendChild(el('div', 'font:500 3.4vh ' + FONT + ';color:#fff;line-height:1.2', m.page === 'ads' ? 'Ad blocking' : 'SponsorBlock'));
-        titles.appendChild(el('div', 'font:400 1.9vh ' + FONT + ';color:#aaa;margin-top:0.3vh', 'VAG11 TV'));
+        titles.appendChild(el('div', 'font:500 4.25vh ' + FONT + ';color:#fff;line-height:1.2', m.page === 'ads' ? 'Ad blocking' : m.page === 'updates' ? 'Updates' : 'SponsorBlock'));
+        titles.appendChild(el('div', 'font:400 2.38vh ' + FONT + ';color:#aaa;margin-top:0.38vh', 'VAG11 TV'));
         head.appendChild(titles);
         m.el.appendChild(head);
 
         m.rows.forEach(function (r, i) {
             var focused = i === m.index;
             if (r.kind === 'section') {
-                m.el.appendChild(el('div', 'font:500 1.8vh ' + FONT + ';color:#aaa;letter-spacing:0.08em;text-transform:uppercase;margin:2.6vh 1vw 1vh 1vw', r.label));
+                m.el.appendChild(el('div', 'font:500 2.25vh ' + FONT + ';color:#aaa;letter-spacing:0.08em;text-transform:uppercase;margin:3.25vh 1vw 1.25vh 1vw', r.label));
                 return;
             }
             if (r.kind === 'note') {
-                m.el.appendChild(el('div', 'font:400 1.8vh ' + FONT + ';color:#8a8a8a;margin:2.2vh 1vw 0 1vw;line-height:1.45', r.label));
+                m.el.appendChild(el('div', 'font:400 2.25vh ' + FONT + ';color:#8a8a8a;margin:2.75vh 1vw 0 1vw;line-height:1.45', r.label));
+                return;
+            }
+            if (r.kind === 'hero') {
+                var hero = el('div', 'margin:1.25vh 1vw 3vh 1vw');
+                hero.appendChild(el('div', 'font:500 5vh ' + FONT + ';color:#fff;line-height:1.2', r.label));
+                hero.appendChild(el('div', 'font:400 2.62vh ' + FONT + ';color:#aaa;margin-top:1.25vh;line-height:1.45', r.sub));
+                m.el.appendChild(hero);
+                return;
+            }
+            if (r.kind === 'progress') {
+                var pct = r.total > 0 ? Math.min(100, Math.round(r.done * 100 / r.total)) : 0;
+                var bar = el('div', 'height:1.25vh;border-radius:0.62vh;background:#3a3a3a;margin:0.75vh 1vw;overflow:hidden');
+                bar.appendChild(el('div', 'height:100%;width:' + pct + '%;background:#FF0033;transition:width .4s'));
+                m.el.appendChild(bar);
+                m.el.appendChild(el('div', 'font:400 2.38vh ' + FONT + ';color:#aaa;margin:1vh 1vw',
+                    pct + '%  ·  ' + Math.round(r.done / 1048576) + ' of ' + Math.round(r.total / 1048576) + ' MB'));
+                return;
+            }
+            if (r.kind === 'action') {
+                m.el.appendChild(el('div', [
+                    'box-sizing:border-box', 'padding:2vh 1.4vw', 'margin:0.75vh 0', 'border-radius:999px',
+                    'font:500 3vh ' + FONT, 'text-align:center',
+                    'background:' + (focused ? '#f1f1f1' : '#2c2c2c'), 'color:' + (focused ? '#0f0f0f' : '#fff')
+                ].join(';'), r.label));
                 return;
             }
             if (r.kind === 'stats') {
                 var grid = el('div', 'display:flex;gap:0.8vw;margin:0 0.4vw');
                 [[adStats.videos, 'videos'], [adStats.feedAds, 'feed adverts'], [adStats.shorts, 'Shorts']].forEach(function (st) {
-                    var card = el('div', 'flex:1;background:#2c2c2c;border-radius:1.4vh;padding:1.6vh 1vw');
-                    card.appendChild(el('div', 'font:500 3.2vh ' + FONT + ';color:#fff', String(st[0])));
-                    card.appendChild(el('div', 'font:400 1.7vh ' + FONT + ';color:#aaa;margin-top:0.2vh', st[1]));
+                    var card = el('div', 'flex:1;background:#2c2c2c;border-radius:1.75vh;padding:2vh 1vw');
+                    card.appendChild(el('div', 'font:500 4vh ' + FONT + ';color:#fff', String(st[0])));
+                    card.appendChild(el('div', 'font:400 2.12vh ' + FONT + ';color:#aaa;margin-top:0.25vh', st[1]));
                     grid.appendChild(card);
                 });
                 m.el.appendChild(grid);
@@ -380,38 +422,38 @@
             var dim = r.dim && r.dim();
             var row = el('div', [
                 'display:flex', 'align-items:center', 'gap:1vw', 'box-sizing:border-box',
-                'padding:' + (r.kind === 'toggle' ? '1.6vh 1.4vw' : '1.15vh 1.4vw'), 'margin:0.35vh 0',
-                'border-radius:999px', 'font:400 2.4vh ' + FONT,
+                'padding:' + (r.kind === 'toggle' ? '2vh 1.4vw' : '1.44vh 1.4vw'), 'margin:0.44vh 0',
+                'border-radius:999px', 'font:400 3vh ' + FONT,
                 'background:' + (focused ? '#f1f1f1' : (r.kind === 'toggle' ? '#2c2c2c' : 'transparent')),
                 'color:' + (focused ? '#0f0f0f' : '#fff'), 'opacity:' + (dim && !focused ? '0.45' : '1'),
                 'transition:background .12s'
             ].join(';'));
             if (r.kind === 'cat') {
-                row.appendChild(el('div', 'flex:none;width:1.4vh;height:1.4vh;border-radius:50%;background:' + (SEG_COLORS[r.cat] || '#fff')));
+                row.appendChild(el('div', 'flex:none;width:1.75vh;height:1.75vh;border-radius:50%;background:' + (SEG_COLORS[r.cat] || '#fff')));
             }
             var text = el('div', 'flex:1;min-width:0');
             text.appendChild(el('div', r.kind === 'toggle' ? 'font-weight:500' : '', r.label));
-            if (r.sub) text.appendChild(el('div', 'font-size:1.8vh;margin-top:0.3vh;color:' + (focused ? '#3f3f3f' : '#aaa'), r.sub));
+            if (r.sub) text.appendChild(el('div', 'font-size:2.25vh;margin-top:0.38vh;color:' + (focused ? '#3f3f3f' : '#aaa'), r.sub));
             row.appendChild(text);
             if (r.kind === 'toggle') {
                 row.appendChild(toggleSwitch(r.on(), focused));
             } else {
                 var v = r.value();
-                row.appendChild(el('div', 'flex:none;font-weight:500;font-size:2.1vh;color:' + (focused ? '#0f0f0f' : (v === 'Off' ? '#8a8a8a' : '#fff')),
+                row.appendChild(el('div', 'flex:none;font-weight:500;font-size:2.62vh;color:' + (focused ? '#0f0f0f' : (v === 'Off' ? '#8a8a8a' : '#fff')),
                     focused ? '‹  ' + v + '  ›' : v));
             }
             m.el.appendChild(row);
         });
 
-        m.el.appendChild(el('div', 'position:absolute;left:2.6vw;right:2.6vw;bottom:3.6vh;font:400 1.8vh ' + FONT + ';color:#8a8a8a',
-            'OK or ‹ ›  change  ·  Back  close'));
+        m.el.appendChild(el('div', 'position:absolute;left:2.6vw;right:2.6vw;bottom:4.5vh;font:400 2.25vh ' + FONT + ';color:#8a8a8a',
+            m.page === 'updates' ? 'OK  choose  ·  Back  close' : 'OK or ‹ ›  change  ·  Back  close'));
     }
 
     function openMenu(page) {
         closeMenu();
         var panel = el('div', [
-            'position:fixed', 'top:0', 'right:0', 'bottom:0', 'width:40vw', 'z-index:2147483647',
-            'box-sizing:border-box', 'padding:5vh 2.6vw 8vh 2.6vw', 'overflow:hidden',
+            'position:fixed', 'top:0', 'right:0', 'bottom:0', 'width:50vw', 'z-index:2147483647',
+            'box-sizing:border-box', 'padding:6.25vh 2.6vw 10vh 2.6vw', 'overflow:hidden',
             'background:#212121', 'box-shadow:-1vw 0 4vw rgba(0,0,0,0.55)',
             'transform:translateX(100%)', 'transition:transform .2s ease-out'
         ].join(';'));
@@ -449,6 +491,7 @@
         if (BACK_KEYS[k]) { closeMenu(); return; }
         if (k === 38) moveFocus(-1);
         else if (k === 40) moveFocus(1);
+        else if (k === 13 && row && row.run) row.run();
         else if ((k === 13 || k === 39 || k === 37) && row && row.change) {
             row.change(k === 37 ? -1 : 1);
             save();
@@ -457,6 +500,211 @@
         drawMenu();
     }
     ['keydown', 'keyup', 'keypress'].forEach(function (t) { window.addEventListener(t, onMenuKey, true); });
+
+    // ---- 4. Updates ---------------------------------------------------------------------------
+    //
+    // Settings > Updates checks the releases of Vagii-Kavagi/VAG11TV on GitHub. Each is tagged
+    // v<script>-engine-<engine>; this copy is the script it loaded and the engine it runs on (its
+    // Android version name). A newer one is downloaded and installed by the small Android part the
+    // build adds, the platform service com.vag11.tv.updater, reached through H5vccPlatformService:
+    // an update of this app, so the sign-in and settings stay.
+
+    var REPO = 'Vagii-Kavagi/VAG11TV', SERVICE = 'com.vag11.tv.updater';
+    var upd = { phase: 'idle', release: null, error: '', st: null, timer: 0, engine: null };
+    var client = null, waiting = [];
+
+    // The service, or null when this copy of the app has none. Each request is a JSON message;
+    // the answer is text, returned by send() or, on some engines, through the open() callback.
+    function updater() {
+        if (client) return client;
+        var P = window.H5vccPlatformService, raw = null;
+        try {
+            if (!P || (P.has && !P.has(SERVICE))) return null;
+            raw = P.open(SERVICE, function (svc, data) { var w = waiting.shift(); if (w) w(data); });
+        } catch (e) { log('updater: open failed: ' + e); }
+        if (!raw) return null;
+        function call(cmd, extra) {
+            var msg = { cmd: cmd };
+            for (var k in (extra || {})) msg[k] = extra[k];
+            var bytes = new TextEncoder().encode(JSON.stringify(msg));
+            return new Promise(function (resolve, reject) {
+                var timer = setTimeout(function () { reject(new Error('no answer from the app')); }, 8000);
+                function done(data) { clearTimeout(timer); resolve(data); }
+                var r;
+                try { r = raw.send(bytes.buffer); } catch (e) { clearTimeout(timer); reject(e); return; }
+                if (r && typeof r.then === 'function') r.then(done, reject);
+                else if (r) done(r);
+                else waiting.push(done);
+            }).then(function (data) {
+                if (!data) return '';
+                return new TextDecoder().decode(data instanceof ArrayBuffer ? new Uint8Array(data) : data);
+            });
+        }
+        client = {
+            appInfo: function () { return call('appInfo').then(function (t) { return parse(t); }); },
+            canInstall: function () { return call('canInstall').then(function (t) { return t === 'true'; }); },
+            openInstallSetting: function () { return call('openInstallSetting'); },
+            state: function () { return call('state').then(function (t) { return parse(t); }); },
+            start: function (path, sha) { return call('start', { path: path, sha256: sha }); }
+        };
+        return client;
+    }
+
+    function current() {
+        return { script: window.__vag11.version, engine: upd.engine };
+    }
+
+    // The engine version, asked once from the app (null without the service).
+    function learnEngine() {
+        var b = updater();
+        if (!b || upd.engine) return Promise.resolve(upd.engine);
+        return b.appInfo().then(function (info) { upd.engine = info && info.versionName || null; return upd.engine; },
+            function (e) { log('updater: appInfo failed: ' + e); return null; });
+    }
+
+    function parseTag(tag) {
+        var m = /^v(\d+(?:\.\d+)*)-engine-(\d+(?:\.\d+)*)$/.exec(tag || '');
+        return m ? { script: m[1], engine: m[2] } : null;
+    }
+
+    function cmpVer(a, b) {
+        var x = String(a).split('.'), y = String(b).split('.');
+        for (var i = 0; i < Math.max(x.length, y.length); i++) {
+            var d = (+x[i] || 0) - (+y[i] || 0);
+            if (d) return d < 0 ? -1 : 1;
+        }
+        return 0;
+    }
+
+    function newer(t, cur) {
+        var e = cur.engine ? cmpVer(t.engine, cur.engine) : 0;
+        return e > 0 || (e === 0 && cmpVer(t.script, cur.script) > 0);
+    }
+
+    function releaseLabel(r) {
+        return r.t.script + ' on engine ' + r.t.engine + (r.pre ? ' (untested)' : '');
+    }
+
+    function redrawUpdates() { if (menu && menu.page === 'updates') drawMenu(); }
+
+    function checkUpdates() {
+        upd.phase = 'checking';
+        upd.error = '';
+        redrawUpdates();
+        return learnEngine().then(function () {
+            return fetch('https://api.github.com/repos/' + REPO + '/releases?per_page=20', {
+                headers: { Accept: 'application/vnd.github+json' }
+            });
+        }).then(function (res) {
+            if (!res.ok) throw new Error('GitHub answered ' + res.status);
+            return res.text();
+        }).then(function (text) {
+            var best = null, cur = current();
+            parse(text).forEach(function (r) {
+                if (r.draft || (r.prerelease && !cfg.untested)) return;
+                var t = parseTag(r.tag_name), a = null;
+                (r.assets || []).forEach(function (x) { if (/armeabi-v7a\.apk$/.test(x.name) && x.digest) a = x; });
+                if (!t || !a) return;
+                var c = { tag: r.tag_name, t: t, asset: a, pre: r.prerelease };
+                if (!best || newer(t, best.t)) best = c;
+            });
+            upd.release = best && newer(best.t, cur) ? best : null;
+            upd.phase = upd.release ? 'available' : 'none';
+            log('updates: ' + (upd.release ? 'found ' + upd.release.tag : 'up to date'));
+        }).catch(function (e) {
+            upd.phase = 'error';
+            upd.error = 'Could not reach GitHub (' + (e && e.message || e) + ').';
+        }).then(redrawUpdates);
+    }
+
+    function failed(why) {
+        upd.phase = 'error';
+        upd.error = why;
+        clearInterval(upd.timer);
+        redrawUpdates();
+    }
+
+    function installUpdate() {
+        var b = updater(), r = upd.release;
+        if (!b || !r) return;
+        b.canInstall().then(function (ok) {
+            if (!ok) { upd.phase = 'permission'; redrawUpdates(); return; }
+            return b.start(r.tag + '/' + r.asset.name, r.asset.digest).then(function (res) {
+                if (res !== 'started' && res !== 'busy') { failed('Could not start: ' + res); return; }
+                upd.phase = 'running';
+                upd.st = null;
+                clearInterval(upd.timer);
+                upd.timer = setInterval(function () {
+                    b.state().then(function (st) {
+                        if (!st) return;
+                        upd.st = st;
+                        if (st.state === 'error') failed(st.message || 'Not updated');
+                        else { if (st.state === 'confirm') upd.phase = 'confirm'; redrawUpdates(); }
+                    }, function () { });
+                }, 700);
+                redrawUpdates();
+            });
+        }).catch(function (e) { failed('The app did not answer (' + (e && e.message || e) + ').'); });
+    }
+
+    // Whether the Android part is there (logged once a few seconds after start).
+    setTimeout(function () {
+        learnEngine().then(function (engine) {
+            log('updater: ' + (updater() ? 'service open, engine ' + engine : 'no service in this copy'));
+        });
+    }, 8000);
+
+    // One quiet check a while after start, so Settings can say when an update is waiting.
+    setTimeout(function () { if (upd.phase === 'idle') checkUpdates(); }, 45000);
+
+    function updateRows() {
+        var cur = current(), b = updater(), rows = [], r = upd.release;
+        var mine = 'This TV: VAG11 ' + cur.script + (cur.engine ? ' on engine ' + cur.engine : '');
+        var untested = { kind: 'toggle', label: 'Include untested builds', sub: 'Builds made automatically for new engines',
+            on: function () { return cfg.untested; }, change: function () { cfg.untested = !cfg.untested; checkUpdates(); } };
+        var again = { kind: 'action', label: 'Check again', run: checkUpdates };
+        switch (upd.phase) {
+            case 'idle':
+            case 'checking':
+                rows.push({ kind: 'hero', label: 'Checking for updates…', sub: 'Asking GitHub for the newest release' });
+                rows.push(untested);
+                break;
+            case 'none':
+                rows.push({ kind: 'hero', label: "You're done here", sub: 'VAG11 TV is up to date.' });
+                rows.push(again, untested);
+                break;
+            case 'available':
+                rows.push({ kind: 'hero', label: 'Update available', sub: 'VAG11 ' + releaseLabel(r) + '  ·  ' + Math.round(r.asset.size / 1048576) + ' MB' });
+                if (b) {
+                    rows.push({ kind: 'action', label: 'Download and install', run: installUpdate });
+                    rows.push({ kind: 'note', label: 'Android asks you to press Install once. It is an update, so your sign-in and settings stay.' });
+                } else {
+                    rows.push({ kind: 'note', label: 'This copy cannot install updates itself. Install this one from github.com/' + REPO + '/releases; from then on it can.' });
+                }
+                rows.push(untested);
+                break;
+            case 'permission':
+                rows.push({ kind: 'hero', label: 'One setting first', sub: 'Allow VAG11 TV to install updates: switch it on in the screen that opens, then press Back.' });
+                rows.push({ kind: 'action', label: 'Open the setting', run: function () { if (b) b.openInstallSetting(); } });
+                rows.push({ kind: 'action', label: 'Install now', run: installUpdate });
+                break;
+            case 'running':
+                var st = upd.st || { state: 'downloading', done: 0, total: 0 };
+                var what = st.state === 'verifying' ? 'Checking the download' : st.state === 'installing' ? 'Getting the update ready' : 'Downloading';
+                rows.push({ kind: 'hero', label: what + '…', sub: 'VAG11 ' + releaseLabel(r) });
+                rows.push({ kind: 'progress', done: st.done, total: st.total || (r ? r.asset.size : 0) });
+                rows.push({ kind: 'note', label: 'You can keep watching; the menu can be closed.' });
+                break;
+            case 'confirm':
+                rows.push({ kind: 'hero', label: 'Press Install', sub: 'Android is asking you to confirm the update. VAG11 TV closes, updates and keeps your sign-in and settings.' });
+                break;
+            default:
+                rows.push({ kind: 'hero', label: 'Not updated', sub: upd.error || 'Something went wrong.' });
+                rows.push({ kind: 'action', label: 'Try again', run: checkUpdates });
+        }
+        rows.push({ kind: 'note', label: mine });
+        return rows;
+    }
 
     // ---- 3. SponsorBlock -----------------------------------------------------------------------
 
