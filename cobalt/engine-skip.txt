@@ -1,0 +1,3 @@
+# Engine releases the daily build leaves alone (one tag per line). A build can still be asked for by hand
+# from the Actions tab, with the tag typed in.
+v2.0.3   # often fails to load the script ("JSDelivr is not reachable") on a MiTV-MSSP2; reisxd/TizenTubeCobalt#368

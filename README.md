@@ -4,7 +4,8 @@ YouTube for Android TV, signed out, with **ad blocking** and **SponsorBlock** bu
 Settings. It runs on Cobalt, the open-source engine behind YouTube's TV app, so videos start instantly
 and play on the TV's hardware video decoder, up to 1080p at 60 fps.
 
-> **For Android TV and Google TV devices with an ARMv7 (32-bit ARM) processor**, Android 7.0 or newer.
+> **For Android TV and Google TV devices with an ARMv7 (32-bit ARM) processor**: Android 9 or newer for
+> releases from `v1.1.6-engine-2.0.2` on; Android 7.0 and 8 can use release `v1.1.6`.
 > 64-bit ARM TVs and boxes run it too, as they also run 32-bit ARM apps. It does not run on x86 devices,
 > and it is made for a TV remote, not a phone or a touchscreen.
 
@@ -24,6 +25,24 @@ and play on the TV's hardware video decoder, up to 1080p at 60 fps.
   progress bar in SponsorBlock's colours.
 - Segments come from the community database at `sponsor.ajay.app`. Only the first four characters of a
   hash of the video id are sent, so the server cannot tell which video is playing.
+
+## Updates
+
+- **New engine versions are built automatically.** Once a day, [Engine watch](.github/workflows/engine-watch.yml)
+  checks [TizenTubeCobalt](https://github.com/reisxd/TizenTubeCobalt/releases) for a new engine. When one is
+  out, it builds VAG11 on it and publishes it here as a **pre-release marked untested**, named
+  `v<script>-engine-<engine>`. To get an email, use **Watch → Custom → Releases** on this repo.
+- **Try it, then promote it.** Install the APK over your current VAG11; it keeps your sign-in and settings. If it
+  works, open the release on GitHub, choose *Edit*, tick *Set as the latest release* and untick *Set as a
+  pre-release*. If it doesn't, reinstall the latest release over it.
+- **Engines that are known not to work** are listed in `cobalt/engine-skip.txt` and skipped (2.0.3 is there).
+  A build the script refuses to patch opens an issue instead of a release.
+- **Script fixes** (when YouTube changes how ads arrive) are a new tag in VAG11TV-script, then a new
+  `SCRIPT_VERSION` in `cobalt/build_cobalt.py`. The next build, or *Run workflow* in the Actions tab, picks it up.
+
+Releases are signed with VAG11's own key, kept as an encrypted secret of this repo. `cobalt/vag11.lineage`
+hands over from the key that signed the first releases, so Android 9 and later install them over `v1.1.6`
+without uninstalling. Only that newer signature scheme is used, which is why these releases need Android 9.
 
 ## How it is made
 

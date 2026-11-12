@@ -1,0 +1,117 @@
+# Once a day, looks for a new TizenTubeCobalt engine release. When there is one, builds VAG11 TV on it with the
+# current script, signs it with VAG11's own key, and publishes it here as a pre-release marked untested. Try it on
+# the TV; if it works, mark it as the latest release on GitHub. A build that fails opens an issue instead.
+name: Engine watch
+
+on:
+  schedule:
+    - cron: "17 5 * * *"   # 08:17 in Kenya
+  workflow_dispatch:
+    inputs:
+      engine:
+        description: "Engine tag to build, such as v2.0.2 (empty: the newest)"
+        required: false
+        default: ""
+      dry_run:
+        description: "Build and check only; publish nothing"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: engine-watch
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      UPSTREAM: reisxd/TizenTubeCobalt
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Find the engine and whether it is built already
+        id: find
+        env:
+          WANTED: ${{ inputs.engine }}
+        run: |
+          set -euo pipefail
+          tag="${WANTED:-}"
+          [ -n "$tag" ] || tag=$(gh api "repos/$UPSTREAM/releases/latest" --jq .tag_name)
+          ver="${tag#v}"
+          script=$(python3 -c "import re; print(re.search(r'SCRIPT_VERSION = \"([^\"]+)\"', open('cobalt/build_cobalt.py').read()).group(1))")
+          rel="v${script}-engine-${ver}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "ver=$ver" >> "$GITHUB_OUTPUT"
+          echo "script=$script" >> "$GITHUB_OUTPUT"
+          echo "rel=$rel" >> "$GITHUB_OUTPUT"
+          if [ -z "${WANTED:-}" ] && grep -qx "$tag" <(sed 's/#.*//; s/[[:space:]]//g' cobalt/engine-skip.txt); then
+            echo "Engine $tag is on cobalt/engine-skip.txt; nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if gh release view "$rel" >/dev/null 2>&1; then
+            echo "Release $rel exists already; nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          digest=$(gh api "repos/$UPSTREAM/releases/tags/$tag" --jq '.assets[] | select(.name == "cobalt-arm.apk") | .digest')
+          [ -n "$digest" ] || { echo "No cobalt-arm.apk with a published digest in $UPSTREAM $tag"; exit 1; }
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: Download the engine
+        if: steps.find.outputs.skip == 'false'
+        run: gh release download "${{ steps.find.outputs.tag }}" -R "$UPSTREAM" -p cobalt-arm.apk -D base
+
+      - uses: actions/setup-java@v4
+        if: steps.find.outputs.skip == 'false'
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Build and sign
+        if: steps.find.outputs.skip == 'false'
+        env:
+          VAG11_KEYSTORE_B64: ${{ secrets.VAG11_KEYSTORE_B64 }}
+          VAG11_KEYSTORE_PASS: ${{ secrets.VAG11_KEYSTORE_PASS }}
+        run: |
+          set -euo pipefail
+          [ -n "$VAG11_KEYSTORE_B64" ] || { echo "The VAG11_KEYSTORE_B64 secret is missing"; exit 1; }
+          export VAG11_KEYSTORE="$RUNNER_TEMP/vag11.jks"
+          echo "$VAG11_KEYSTORE_B64" | base64 -d > "$VAG11_KEYSTORE"
+          trap 'rm -f "$VAG11_KEYSTORE"' EXIT
+          out="out/VAG11TV-${{ steps.find.outputs.script }}-engine-${{ steps.find.outputs.ver }}-armeabi-v7a.apk"
+          python3 -I cobalt/build_cobalt.py --sha256 "${{ steps.find.outputs.digest }}" \
+            --engine "${{ steps.find.outputs.ver }}" base/cobalt-arm.apk "$out"
+          echo "APK=$out" >> "$GITHUB_ENV"
+
+      - name: Publish as an untested pre-release
+        if: steps.find.outputs.skip == 'false' && inputs.dry_run != true
+        run: |
+          set -euo pipefail
+          sum=$(sha256sum "$APK" | cut -d' ' -f1)
+          size=$(stat -c %s "$APK")
+          cat > notes.md <<EOF
+          **Untested.** Built automatically on TizenTubeCobalt engine ${{ steps.find.outputs.ver }}
+          ([its release](https://github.com/$UPSTREAM/releases/tag/${{ steps.find.outputs.tag }})) with the VAG11 script ${{ steps.find.outputs.script }}.
+          New engine versions do not always work: 2.0.3, for one, often failed to load the script on a Xiaomi TV.
+          Try it, and if it works, mark this release as the latest. If it does not, reinstall the latest release over it.
+
+          - For Android TV and Google TV on **Android 9 or later** with an ARMv7 (or 64-bit ARM) processor.
+          - Installs over an earlier VAG11 TV and keeps your sign-in and settings.
+          - \`$(basename "$APK")\`, $size bytes, SHA-256 \`$sum\`
+          EOF
+          gh release create "${{ steps.find.outputs.rel }}" "$APK" --prerelease \
+            --title "VAG11 TV ${{ steps.find.outputs.script }} on engine ${{ steps.find.outputs.ver }} (untested)" \
+            --notes-file notes.md
+
+      - name: Open an issue when the build fails
+        if: failure()
+        run: |
+          title="Engine watch: building ${{ steps.find.outputs.tag || 'the new engine' }} failed"
+          if ! gh issue list --state open --search "in:title \"$title\"" --json number --jq '.[0].number' | grep -q .; then
+            gh issue create --title "$title" --body "The daily engine build failed: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}. The engine may have changed in a way the build script refuses to patch; nothing was published."
+          fi

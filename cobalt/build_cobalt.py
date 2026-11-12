@@ -1,6 +1,10 @@
 """Builds VAG11TV for Cobalt from the TizenTubeCobalt base APK.
 
     python -I cobalt/build_cobalt.py base/cobalt-arm-v2.0.2.apk out/VAG11TV-cobalt.apk
+    python -I cobalt/build_cobalt.py --sha256 <hex> --engine 2.0.4 --script 1.1.6 base.apk out.apk
+
+A base that is not in BASES (a new engine release) is built only with --sha256, the digest GitHub publishes
+for that release asset, which the file must match.
 
 The base is TizenTubeCobalt (github.com/reisxd/TizenTubeCobalt, BSD-3-Clause): YouTube's open-source
 TV engine, Cobalt, built with a hook that loads one script into youtube.com/tv. The base is checked
@@ -13,8 +17,12 @@ against the published SHA-256, then changed only by same-length replacements, so
     the label.
   - the launcher icon and TV banner: VAG11's (cobalt/art), same files and sizes.
 
-The old signature is dropped; the result is aligned and signed with this PC's debug key (the same
-key as the WebView build), using zipalign and apksigner from the Android SDK.
+The old signature is dropped; the result is aligned and signed with zipalign and apksigner from the
+Android SDK. With VAG11_KEYSTORE set (and VAG11_KEYSTORE_PASS), it is signed with VAG11's own key and
+cobalt/vag11.lineage, the handover from this PC's debug key that signed the first releases: Android 9
+and later then installs it over an older VAG11 without uninstalling. Only the v3 signature is written
+(the older schemes would need the old key), so these builds need Android 9 or later. Without
+VAG11_KEYSTORE, the debug key signs, as before.
 """
 import hashlib
 import os
@@ -98,13 +106,21 @@ def sdk_tool(name):
     raise SystemExit("%s not found in %s" % (name, tools))
 
 
-def main(base, out):
+def main(base, out, expected_sha256=None, engine=None, script=None):
+    global NEW_URL
+    if script:
+        if len(script) > 5:
+            raise SystemExit("script version %r is longer than five characters" % script)
+        NEW_URL = ("https://cdn.jsdelivr.net/gh/Vagii-Kavagi/VAG11TV-script@%s/v.js?v=" % script).encode()
     with open(base, "rb") as f:
         digest = hashlib.sha256(f.read()).hexdigest()
-    if digest not in BASES:
+    if digest in BASES:
+        version, package_count = BASES[digest]
+    elif expected_sha256 and digest == expected_sha256.lower().replace("sha256:", ""):
+        version, package_count = engine or "unknown", None   # counted in the manifest below
+    else:
         raise SystemExit("base APK SHA-256 %s is not one of the published, checked bases" % digest)
-    version, package_count = BASES[digest]
-    print("base: TizenTubeCobalt %s" % version)
+    print("base: TizenTubeCobalt %s, script %s" % (version, script or SCRIPT_VERSION))
 
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
     tmp = tempfile.mkdtemp()
@@ -122,7 +138,13 @@ def main(base, out):
             elif name == LIB:
                 data = patch_url(data)
             elif name == "AndroidManifest.xml":
-                data = patch_utf16(data, OLD_PACKAGE, NEW_PACKAGE, name, package_count)  # package, providers
+                count = package_count
+                if count is None:
+                    # A new engine: every place the package name is, as long as there is at least one.
+                    count = data.count(OLD_PACKAGE.encode("utf-16-le"))
+                    if count < 1:
+                        raise SystemExit("package name not found in the manifest")
+                data = patch_utf16(data, OLD_PACKAGE, NEW_PACKAGE, name, count)  # package, providers
                 data = patch_utf16(data, OLD_LABEL, NEW_LABEL, name, 1)
             # resources.arsc keeps the base's package name, as Android's own renaming does
             # (aapt --rename-manifest-package): renamed there too, the engine fails to load the
@@ -138,15 +160,34 @@ def main(base, out):
     os.environ["PATH"] = os.path.join(jdk, "bin") + os.pathsep + os.environ.get("PATH", "")
 
     subprocess.check_call([sdk_tool("zipalign"), "-f", "-p", "4", unsigned, aligned])
-    keystore = os.path.join(os.path.expanduser("~"), ".android", "debug.keystore")
-    subprocess.check_call([sdk_tool("apksigner"), "sign", "--ks", keystore, "--ks-pass", "pass:android",
-                           "--key-pass", "pass:android", "--ks-key-alias", "androiddebugkey",
-                           "--out", out, aligned])
-    subprocess.check_call([sdk_tool("apksigner"), "verify", out])
+    own = os.environ.get("VAG11_KEYSTORE")
+    if own:
+        password = "env:VAG11_KEYSTORE_PASS"
+        lineage = os.path.join(os.path.dirname(os.path.abspath(__file__)), "vag11.lineage")
+        subprocess.check_call([sdk_tool("apksigner"), "sign", "--ks", own, "--ks-pass", password,
+                               "--key-pass", password, "--ks-key-alias", "vag11",
+                               "--lineage", lineage, "--rotation-min-sdk-version", "28",
+                               # The old key stays on the PC that made it, so only the v3 signature (Android 9
+                               # and later), the one that carries the handover, is written.
+                               "--min-sdk-version", "28", "--v1-signing-enabled", "false",
+                               "--v2-signing-enabled", "false", "--v3-signing-enabled", "true",
+                               "--out", out, aligned])
+    else:
+        keystore = os.path.join(os.path.expanduser("~"), ".android", "debug.keystore")
+        subprocess.check_call([sdk_tool("apksigner"), "sign", "--ks", keystore, "--ks-pass", "pass:android",
+                               "--key-pass", "pass:android", "--ks-key-alias", "androiddebugkey",
+                               "--out", out, aligned])
+    subprocess.check_call([sdk_tool("apksigner"), "verify", "--print-certs", out])
     print("built %s (%d bytes)" % (out, os.path.getsize(out)))
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 3:
-        raise SystemExit(__doc__)
-    main(sys.argv[1], sys.argv[2])
+    import argparse
+    ap = argparse.ArgumentParser(usage=__doc__)
+    ap.add_argument("base")
+    ap.add_argument("out")
+    ap.add_argument("--sha256", help="the digest GitHub publishes for a base not in BASES")
+    ap.add_argument("--engine", help="the engine version, for the log")
+    ap.add_argument("--script", help="the VAG11TV-script tag to load (default %s)" % SCRIPT_VERSION)
+    a = ap.parse_args()
+    main(a.base, a.out, a.sha256, a.engine, a.script)
